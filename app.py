@@ -73,6 +73,7 @@ if uploaded_file:
             if 'CPF' in df.columns: df['CPF'] = df['CPF'].astype(str).str.strip()
             if 'Codigo_Padrao' in df.columns: df['Codigo_Padrao'] = df['Codigo_Padrao'].astype(str).str.strip()
         if 'Pergunta' in df_perguntas.columns: df_perguntas['Pergunta'] = df_perguntas['Pergunta'].astype(str).str.strip()
+        if 'Nome_Padrao' in df_perguntas.columns: df_perguntas['Nome_Padrao'] = df_perguntas['Nome_Padrao'].astype(str).str.strip()
         dados_ok = True
     except Exception as e: st.error(f"Erro Base: {e}")
         # ================= EXECUÇÃO =================
@@ -84,22 +85,26 @@ if pagina == "📝 EXECUTAR DTO 01":
         st.sidebar.header("Filtros Execução")
         
         t_fil = df_treinos['Filial'].dropna().unique()
-        sel_fil = st.sidebar.multiselect("Filiais", t_fil)
+        sel_fil = st.sidebar.multiselect("Selecione a(s) Filial(is)", t_fil)
         
         t_pad = df_perguntas['Codigo_Padrao'].dropna().unique()
-        sel_pad = list(t_pad) if st.sidebar.checkbox("Todos Padrões", key="p_exec") else st.sidebar.multiselect("Padrões", t_pad)
+        sel_pad = list(t_pad) if st.sidebar.checkbox("Todos Padrões", key="pe") else st.sidebar.multiselect("Padrões", t_pad)
 
         if sel_fil and sel_pad:
-            # Filtra Base
             df_m = df_treinos[(df_treinos['Filial'].isin(sel_fil)) & (df_treinos['Codigo_Padrao'].isin(sel_pad))]
             
             if df_m.empty: st.warning("Sem dados.")
             else:
-                # Conta Padrões por pessoa
+                # Mapa de Nomes dos Padrões (NOVO)
+                # Cria um dicionário {Código: Nome}
+                mapa_nomes = {}
+                if 'Nome_Padrao' in df_perguntas.columns:
+                    temp_nomes = df_perguntas[['Codigo_Padrao', 'Nome_Padrao']].drop_duplicates()
+                    mapa_nomes = pd.Series(temp_nomes.Nome_Padrao.values, index=temp_nomes.Codigo_Padrao).to_dict()
+
                 rank = df_m.groupby(['CPF','Nome_Funcionario','Filial']).size().reset_index(name='Qtd')
                 rank = rank.sort_values(by=['Qtd','Filial'], ascending=[False,True])
                 
-                # Paginação
                 tot_p = (len(rank)-1)//10 + 1
                 c1,c2,c3 = st.columns([1,3,1])
                 if c1.button("⬅️") and st.session_state['pagina_atual']>0: 
@@ -109,35 +114,31 @@ if pagina == "📝 EXECUTAR DTO 01":
                 c2.markdown(f"<div style='text-align:center'>Pág {st.session_state['pagina_atual']+1}/{tot_p}</div>", unsafe_allow_html=True)
                 
                 pg_rank = rank.iloc[st.session_state['pagina_atual']*10 : (st.session_state['pagina_atual']+1)*10]
-                
-                # Memória
                 mem = {f"{str(r.get('CPF','')).strip()}_{str(r.get('Padrao','')).strip()}_{str(r.get('Pergunta','')).strip()}": {'res':r.get('Resultado'),'obs':r.get('Observacao')} for r in st.session_state['resultados']}
                 
-                # Renderiza Cartões
                 for _, row in pg_rank.iterrows():
                     cpf, nome, fil = row['CPF'], row['Nome_Funcionario'], row['Filial']
-                    # CORREÇÃO AQUI: Pegando a quantidade calculada no 'rank'
-                    qtd_padroes = row['Qtd']
-                    
+                    qtd_pads = row['Qtd']
                     salvos = sum(1 for r in st.session_state['resultados'] if str(r.get('CPF','')).strip()==cpf)
                     icon = "🟢" if salvos>0 else "⚪"
                     
-                    # CORREÇÃO AQUI: Exibindo a quantidade no título
-                    with st.expander(f"{icon} {nome} | {fil} ({qtd_padroes} Padrões)"):
+                    with st.expander(f"{icon} {nome} | {fil} ({qtd_pads} Padrões)"):
                         pads = df_m[df_m['CPF']==cpf]['Codigo_Padrao'].unique()
                         with st.form(key=f"f_{cpf}"):
                             resps, obss = {}, {}
                             for p in pads:
-                                st.markdown(f"**{p}**")
+                                # TÍTULO DO PADRÃO COM NOME (ATUALIZADO)
+                                nome_p = mapa_nomes.get(p, "")
+                                titulo_display = f"**{p} - {nome_p}**" if nome_p else f"**{p}**"
+                                st.markdown(titulo_display)
+                                
                                 pergs = df_perguntas[df_perguntas['Codigo_Padrao']==p]
                                 for idx, pr in pergs.iterrows():
                                     pt = pr['Pergunta']
                                     kb = f"{cpf}_{p}_{pt}"
                                     kw = f"{cpf}_{p}_{idx}"
-                                    
                                     prev = mem.get(kb)
                                     idx_r = ["Conforme","Não Conforme","Não se Aplica"].index(prev['res']) if prev and prev['res'] in ["Conforme","Não Conforme","Não se Aplica"] else None
-                                    
                                     st.write(pt)
                                     resps[kw] = st.radio("R", ["Conforme","Não Conforme","Não se Aplica"], key=kw, horizontal=True, index=idx_r, label_visibility="collapsed")
                                     obss[kw] = st.text_input("Obs", value=(prev['obs'] if prev else ""), key=f"obs_{kw}")
@@ -151,9 +152,7 @@ if pagina == "📝 EXECUTAR DTO 01":
                                         _, pr, ir = k.split('_', 2)
                                         try: pt_txt = df_perguntas.loc[int(ir), 'Pergunta']
                                         except: pt_txt = "Erro"
-                                        
                                         st.session_state['resultados'] = [r for r in st.session_state['resultados'] if not (str(r.get('CPF','')).strip()==cpf and str(r.get('Padrao','')).strip()==pr and str(r.get('Pergunta','')).strip()==pt_txt)]
-                                        
                                         reg = {"Data":dh, "Filial":fil, "Funcionario":nome, "CPF":cpf, "Padrao":pr, "Pergunta":pt_txt, "Resultado":v, "Observacao":obss.get(k,"")}
                                         if auditor_valido: reg.update({"Auditor_Nome":auditor_valido['Nome'], "Auditor_CPF":auditor_valido['CPF']})
                                         st.session_state['resultados'].append(reg)
@@ -165,40 +164,38 @@ elif pagina == "📊 Painel Gerencial":
     st.title("📊 Painel Gerencial")
     if not dados_ok: st.info("👈 Carregue a Base.")
     else:
+        with st.expander("🔍 Raio-X da Base de Dados (Verificar Erros)", expanded=True):
+            check_colisao = df_treinos.groupby('CPF')['Nome_Funcionario'].nunique()
+            colisoes = check_colisao[check_colisao > 1]
+            if not colisoes.empty:
+                st.error(f"🚨 ERRO CRÍTICO: {len(colisoes)} CPFs duplicados!")
+                for cpf_errado in colisoes.index:
+                    nomes = df_treinos[df_treinos['CPF'] == cpf_errado]['Nome_Funcionario'].unique()
+                    st.warning(f"CPF {cpf_errado}: {', '.join(nomes)}")
+            else: st.success("✅ Base de Dados íntegra.")
+
         st.sidebar.header("Filtros Dashboard")
-        # Filtros Dash Independentes
-        t_fil_d = df_treinos['Filial'].dropna().unique()
-        f_sel = list(t_fil_d) if st.sidebar.checkbox("Todas Filiais", value=True, key="fd_all") else st.sidebar.multiselect("Filiais", t_fil_d, default=t_fil_d)
+        t_fil_d = df_treinos['Filial'].unique()
+        f_sel = list(t_fil_d) if st.sidebar.checkbox("Todas Filiais", value=True, key="fa") else st.sidebar.multiselect("Filiais", t_fil_d, default=t_fil_d)
         
-        t_pad_d = df_perguntas['Codigo_Padrao'].dropna().unique()
-        p_sel = list(t_pad_d) if st.sidebar.checkbox("Todos Padrões", value=True, key="pd_all") else st.sidebar.multiselect("Padrões", t_pad_d, default=t_pad_d)
-        
-        df_res = pd.DataFrame(st.session_state['resultados'])
-        
-        # Conflitos (Só se tiver dados)
-        if not df_res.empty and all(c in df_res.columns for c in ['CPF','Padrao','Pergunta']):
-            dups = df_res[df_res.duplicated(subset=['CPF','Padrao','Pergunta'], keep=False)]
-            if not dups.empty: st.error(f"⚠️ {len(dups)} Conflitos!"); st.dataframe(dups)
-            else: st.success("✅ Sem conflitos.")
-        elif not df_res.empty: st.warning("Histórico incompleto.")
-        else: st.info("Sem auditorias realizadas.")
+        t_pad_d = df_perguntas['Codigo_Padrao'].unique()
+        p_sel = list(t_pad_d) if st.sidebar.checkbox("Todos Padrões", value=True, key="pa") else st.sidebar.multiselect("Padrões", t_pad_d, default=t_pad_d)
         
         st.markdown("---")
         
-        # KPIs (Calculados mesmo sem auditorias, baseados na Meta)
         df_escopo = df_treinos[(df_treinos['Filial'].isin(f_sel)) & (df_treinos['Codigo_Padrao'].isin(p_sel))]
         total = df_escopo['CPF'].nunique()
         concluidos = 0
         
-        # Filtra Resultados para bater com o escopo
+        df_res = pd.DataFrame(st.session_state['resultados'])
         df_r_filt = pd.DataFrame()
-        if not df_res.empty and 'Filial' in df_res.columns and 'Padrao' in df_res.columns:
-            df_r_filt = df_res[(df_res['Filial'].isin(f_sel)) & (df_res['Padrao'].isin(p_sel))]
+        if not df_res.empty:
+            if 'Filial' in df_res.columns and 'Padrao' in df_res.columns:
+                df_r_filt = df_res[(df_res['Filial'].isin(f_sel)) & (df_res['Padrao'].isin(p_sel))]
         
         if not df_r_filt.empty and 'CPF' in df_r_filt.columns:
             resps = df_r_filt.groupby('CPF').size().to_dict()
             metas = df_perguntas.groupby('Codigo_Padrao').size().to_dict()
-            
             for cpf in df_escopo['CPF'].unique():
                 pads = df_escopo[df_escopo['CPF']==cpf]['Codigo_Padrao'].unique()
                 meta = sum(metas.get(p,0) for p in pads)
@@ -207,7 +204,7 @@ elif pagina == "📊 Painel Gerencial":
         c1,c2 = st.columns(2)
         c1.metric("Total Pessoas (Meta)", total)
         prog = concluidos/total if total else 0
-        c2.metric("Concluídos (100%)", concluidos, f"{int(prog*100)}%")
+        c2.metric("Concluídos", concluidos, f"{int(prog*100)}%")
         st.progress(prog)
         
         st.markdown("---")
