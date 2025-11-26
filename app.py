@@ -3,9 +3,9 @@ import pandas as pd
 from io import BytesIO
 from datetime import datetime
 import os
-import pytz # Biblioteca de Fuso Horário
+import pytz
 
-# --- CONFIGURAÇÃO DA PÁGINA (BRANDING DTO 01) ---
+# --- CONFIGURAÇÃO DA PÁGINA ---
 st.set_page_config(
     page_title="DTO 01 - DCS 2025", 
     page_icon="🏢", 
@@ -16,12 +16,11 @@ st.set_page_config(
 if 'resultados' not in st.session_state:
     st.session_state['resultados'] = []
 
-# --- FUNÇÃO DE HORÁRIO BRASÍLIA ---
 def obter_hora_brasilia():
     fuso = pytz.timezone('America/Sao_Paulo')
     return datetime.now(fuso).strftime("%d/%m/%Y %H:%M")
 
-# --- BARRA LATERAL COM LOGO E NOME ---
+# --- BARRA LATERAL ---
 st.sidebar.header("1. Carga de Dados")
 
 if os.path.exists("logo.png"):
@@ -29,9 +28,26 @@ if os.path.exists("logo.png"):
 else:
     st.sidebar.write("🏢 DTO 01 - DCS 2025")
 
-uploaded_file = st.sidebar.file_uploader("Suba o arquivo Excel (dados_auditoria.xlsx)", type=["xlsx"])
+# 1. Arquivo de Base (Obrigatório)
+uploaded_file = st.sidebar.file_uploader("1º Passo: Base de Dados (Excel)", type=["xlsx"], key="base")
 
-# --- TÍTULO PRINCIPAL DA PÁGINA ---
+# 2. Arquivo de Histórico (Opcional - Para continuar trabalho)
+st.sidebar.markdown("---")
+st.sidebar.markdown("**Vai continuar uma auditoria anterior?**")
+uploaded_history = st.sidebar.file_uploader("2º Passo: Carregar Histórico (Opcional)", type=["xlsx"], key="hist")
+
+# --- LÓGICA DE CARREGAMENTO DO HISTÓRICO ---
+# Se o usuário subiu um histórico E a memória está vazia, carregamos os dados
+if uploaded_history is not None and not st.session_state['resultados']:
+    try:
+        df_hist = pd.read_excel(uploaded_history)
+        # Converte o Excel de volta para a lista de dicionários que o sistema entende
+        st.session_state['resultados'] = df_hist.to_dict('records')
+        st.sidebar.success(f"♻️ Histórico restaurado! {len(st.session_state['resultados'])} registros carregados.")
+    except Exception as e:
+        st.sidebar.error(f"Erro ao ler histórico: {e}")
+
+# --- TÍTULO ---
 st.title("🏢 DTO 01 - DCS 2025")
 st.markdown("### Auditoria de Padrões e Processos")
 st.markdown("---")
@@ -41,53 +57,61 @@ if uploaded_file:
         df_treinos = pd.read_excel(uploaded_file, sheet_name='Base_Treinamentos')
         df_perguntas = pd.read_excel(uploaded_file, sheet_name='Padroes_Perguntas')
         
-        # --- BLINDAGEM DE DADOS ---
+        # Blindagem
         df_treinos['CPF'] = df_treinos['CPF'].astype(str)
         df_treinos['Codigo_Padrao'] = df_treinos['Codigo_Padrao'].astype(str)
         df_perguntas['Codigo_Padrao'] = df_perguntas['Codigo_Padrao'].astype(str)
         
-        st.sidebar.success("Dados carregados e tratados com sucesso!")
     except Exception as e:
-        st.error(f"Erro ao ler o arquivo: {e}")
+        st.error(f"Erro ao ler base de dados: {e}")
         st.stop()
 
-    # --- PASSO 2: FILTROS DO AUDITOR ---
-    st.sidebar.header("2. Configuração da Auditoria")
-    
+    # --- DICIONÁRIO DE MEMÓRIA RÁPIDA ---
+    # Cria um mapa para saber rapidamente o que já foi respondido
+    # Chave: CPF_PADRAO_PERGUNTA -> Valor: {Resultado, Obs}
+    memoria_respostas = {}
+    for item in st.session_state['resultados']:
+        # Cria uma chave única para busca
+        chave_unica = f"{item['CPF']}_{item['Padrao']}_{item['Pergunta']}"
+        memoria_respostas[chave_unica] = {
+            "resultado": item['Resultado'],
+            "obs": item['Observacao']
+        }
+
+    # --- FILTROS ---
+    st.sidebar.header("2. Configuração")
     filiais = df_treinos['Filial'].unique()
     filial_selecionada = st.sidebar.selectbox("Selecione a Filial", filiais)
     
     padroes_disponiveis = df_perguntas['Codigo_Padrao'].unique()
-    padroes_selecionados = st.sidebar.multiselect("Quais padrões você vai auditar hoje?", padroes_disponiveis)
+    padroes_selecionados = st.sidebar.multiselect("Quais padrões auditar?", padroes_disponiveis)
 
     if filial_selecionada and padroes_selecionados:
         
-        # Filtros
         df_filial = df_treinos[df_treinos['Filial'] == filial_selecionada]
         df_match = df_filial[df_filial['Codigo_Padrao'].isin(padroes_selecionados)]
         
         if df_match.empty:
-            st.warning("Nenhum funcionário nesta filial possui treinamento nos padrões selecionados.")
+            st.warning("Nenhum funcionário encontrado.")
         else:
-            # Ranking
             ranking = df_match.groupby(['CPF', 'Nome_Funcionario']).size().reset_index(name='Qtd_Padroes')
             ranking = ranking.sort_values(by='Qtd_Padroes', ascending=False)
             
             st.subheader(f"📍 Fila de Auditoria - {filial_selecionada}")
-            st.info(f"Encontramos {len(ranking)} funcionários aptos. Clique no nome para abrir a auditoria.")
-
-            # --- RENDERIZAÇÃO DA LISTA ---
+            
+            # --- RENDERIZAÇÃO ---
             for index, row in ranking.iterrows():
                 cpf = row['CPF']
                 nome = row['Nome_Funcionario']
                 qtd = row['Qtd_Padroes']
                 
-                with st.expander(f"👤 {nome} (Coincidência de Padrões: {qtd})"):
-                    st.write(f"**CPF:** {cpf}")
-                    
+                # Feedback Visual: Se já tem respostas para esse CPF, mudamos o ícone ou cor (simulado)
+                # Verifica quantos itens desse CPF já estão na memória
+                respondidos_count = sum(1 for r in st.session_state['resultados'] if r['CPF'] == cpf)
+                status_icon = "✅" if respondidos_count > 0 else "👤"
+                
+                with st.expander(f"{status_icon} {nome} (Match: {qtd} | Respondidos: {respondidos_count})"):
                     padroes_do_funcionario = df_match[df_match['CPF'] == cpf]['Codigo_Padrao'].unique()
-                    lista_padroes = ", ".join([str(p) for p in padroes_do_funcionario])
-                    st.write(f"**Padrões a auditar:** {lista_padroes}")
                     
                     with st.form(key=f"form_{cpf}"):
                         respostas = {}
@@ -100,22 +124,36 @@ if uploaded_file:
                                 pergunta = p_row['Pergunta']
                                 chave_pergunta = f"{cpf}_{padrao}_{idx}"
                                 
+                                # --- LÓGICA DE RECUPERAÇÃO (RECALL) ---
+                                # Verifica se já existe resposta na memória
+                                chave_busca = f"{cpf}_{padrao}_{pergunta}"
+                                dados_previos = memoria_respostas.get(chave_busca)
+                                
+                                # Define valores iniciais
+                                index_previo = None
+                                obs_previa = ""
+                                
+                                if dados_previos:
+                                    opcoes = ["Conforme", "Não Conforme", "Não se Aplica"]
+                                    if dados_previos['resultado'] in opcoes:
+                                        index_previo = opcoes.index(dados_previos['resultado'])
+                                    obs_previa = dados_previos['obs']
+                                    if pd.isna(obs_previa): obs_previa = ""
+
                                 st.write(pergunta)
                                 
-                                # Tenta pré-carregar valor se já existir no histórico (Opcional, mas avançado)
-                                # Por enquanto mantemos index=None para forçar atenção do auditor
                                 respostas[chave_pergunta] = st.radio(
                                     "Avaliação", 
                                     ["Conforme", "Não Conforme", "Não se Aplica"], 
                                     key=chave_pergunta,
                                     horizontal=True,
                                     label_visibility="collapsed",
-                                    index=None 
+                                    index=index_previo # AQUI ESTÁ A MÁGICA: Preenche o que já estava salvo
                                 )
-                                obs = st.text_input("Observação", key=f"obs_{chave_pergunta}")
+                                obs = st.text_input("Observação", value=obs_previa, key=f"obs_{chave_pergunta}")
                                 st.markdown("---")
 
-                        submit = st.form_submit_button("✅ Salvar/Atualizar Respostas")
+                        submit = st.form_submit_button("💾 Salvar/Atualizar")
                         
                         if submit:
                             data_hora = obter_hora_brasilia()
@@ -130,16 +168,12 @@ if uploaded_file:
                                     except:
                                         pergunta_texto = "Pergunta não localizada"
 
-                                    # --- LÓGICA DE ATUALIZAÇÃO (UPSERT) ---
-                                    # Antes de adicionar, removemos qualquer registro anterior 
-                                    # que tenha o mesmo CPF, Padrão e Pergunta.
-                                    # Isso garante que a informação seja atualizada e não duplicada.
+                                    # UPSERT
                                     st.session_state['resultados'] = [
                                         r for r in st.session_state['resultados'] 
                                         if not (r['CPF'] == cpf and r['Padrao'] == padrao_ref and r['Pergunta'] == pergunta_texto)
                                     ]
 
-                                    # Adiciona o novo registro (agora limpo)
                                     st.session_state['resultados'].append({
                                         "Data": data_hora,
                                         "Filial": filial_selecionada,
@@ -153,12 +187,10 @@ if uploaded_file:
                                     itens_salvos += 1
                             
                             if itens_salvos > 0:
-                                st.success(f"{itens_salvos} respostas de {nome} foram salvas/atualizadas!")
+                                st.success(f"Dados salvos!")
                                 st.rerun()
-                            else:
-                                st.warning("Você não selecionou nenhuma resposta.")
 
-    # --- ÁREA DE GESTÃO DE DADOS ---
+    # --- DOWNLOAD E LIMPEZA ---
     st.markdown("---")
     st.header("📂 Gestão de Resultados")
     
@@ -168,29 +200,26 @@ if uploaded_file:
         df_export = pd.DataFrame(st.session_state['resultados'])
         
         with col_download:
-            st.dataframe(df_export, height=200) # Mostra prévia
+            st.dataframe(df_export, height=200)
             
             output = BytesIO()
             with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-                df_export.to_excel(writer, index=False, sheet_name='Auditoria')
+                df_export.to_excel(writer, index=False)
             
             file_name_date = obter_hora_brasilia().replace("/","-").replace(":", "h").replace(" ", "_")
             st.download_button(
-                label="📥 Baixar Excel Completo",
+                "📥 Baixar Excel Completo (Backup)",
                 data=output.getvalue(),
                 file_name=f"Auditoria_DTO01_{file_name_date}.xlsx",
                 mime="application/vnd.ms-excel"
             )
         
         with col_limpar:
-            st.write("") # Espaço para alinhar
-            st.write("") 
-            # Botão de Limpeza com verificação de segurança (não pede senha, mas exige clique)
-            if st.button("🗑️ LIMPAR Histórico", type="primary", help="Apaga todos os dados da sessão atual para começar do zero"):
+            st.write("")
+            st.write("")
+            if st.button("🗑️ LIMPAR Histórico", type="primary"):
                 st.session_state['resultados'] = []
                 st.rerun()
-    else:
-        st.info("Nenhuma auditoria realizada nesta sessão.")
 
 else:
-    st.info("👈 Por favor, carregue o arquivo de dados na barra lateral para começar.")
+    st.info("👈 Carregue a Base de Dados na barra lateral.")
