@@ -5,62 +5,75 @@ from datetime import datetime
 import os
 import pytz
 
-# --- CONFIGURAÇÃO ---
-st.set_page_config(page_title="DTO 01 - DCS 2025", page_icon="🏢", layout="wide")
+# --- 1. CONFIGURAÇÃO DA PÁGINA ---
+st.set_page_config(
+    page_title="DTO 01 - DCS 2025", 
+    page_icon="🏢", 
+    layout="wide"
+)
 
-# --- MEMÓRIA ---
-if 'resultados' not in st.session_state: st.session_state['resultados'] = []
-if 'pagina_atual' not in st.session_state: st.session_state['pagina_atual'] = 0
-if 'auditor_logado' not in st.session_state: st.session_state['auditor_logado'] = None
+# --- 2. INICIALIZAÇÃO DE MEMÓRIA (SESSION STATE) ---
+if 'resultados' not in st.session_state:
+    st.session_state['resultados'] = []
 
-def obter_hora():
-    return datetime.now(pytz.timezone('America/Sao_Paulo')).strftime("%d/%m/%Y %H:%M")
+if 'pagina_atual' not in st.session_state:
+    st.session_state['pagina_atual'] = 0
 
-# --- BARRA LATERAL ---
+if 'auditor_logado' not in st.session_state:
+    st.session_state['auditor_logado'] = None
+
+# --- 3. FUNÇÕES AUXILIARES ---
+def obter_hora_brasilia():
+    fuso = pytz.timezone('America/Sao_Paulo')
+    return datetime.now(fuso).strftime("%d/%m/%Y %H:%M")
+
+# --- 4. BARRA LATERAL (UPLOADS E LOGIN) ---
 st.sidebar.header("1. Configuração")
-if os.path.exists("logo.png"): st.sidebar.image("logo.png", use_container_width=True)
-else: st.sidebar.write("🏢 DTO 01 - DCS 2025")
 
-# Uploads
+# Logo
+if os.path.exists("logo.png"):
+    st.sidebar.image("logo.png", use_container_width=True)
+else:
+    st.sidebar.write("🏢 DTO 01 - DCS 2025")
+
+# Upload Base de Dados
 uploaded_file = st.sidebar.file_uploader("Base (Excel)", type=["xlsx"], key="base")
-uploaded_hist = st.sidebar.file_uploader("Histórico", type=["xlsx"], key="hist", accept_multiple_files=True)
 
-# Lógica Histórico
+# Upload Histórico (Múltiplos Arquivos)
+uploaded_hist = st.sidebar.file_uploader(
+    "Carregar Histórico (Opcional)", 
+    type=["xlsx"], 
+    key="hist", 
+    accept_multiple_files=True
+)
+
+# Processamento do Histórico
 if uploaded_hist and not st.session_state['resultados']:
-    all_dfs = []
+    lista_dfs = []
     try:
-        for arq in uploaded_hist:
-            df = pd.read_excel(arq)
-            df.columns = [c.strip() for c in df.columns]
-            for c in ['CPF','Padrao','Pergunta','Auditor_CPF']:
-                if c in df.columns: df[c] = df[c].astype(str).str.strip()
-            all_dfs.append(df)
-        if all_dfs:
-            st.session_state['resultados'] = pd.concat(all_dfs, ignore_index=True).to_dict('records')
-            st.sidebar.success(f"📦 Consolidado: {len(st.session_state['resultados'])} regs.")
-    except Exception as e: st.sidebar.error(f"Erro: {e}")
+        for arquivo in uploaded_hist:
+            df_temp = pd.read_excel(arquivo)
+            # Limpa nomes das colunas
+            df_temp.columns = [c.strip() for c in df_temp.columns]
+            
+            # Converte colunas chave para texto
+            for col in ['CPF', 'Padrao', 'Pergunta', 'Auditor_CPF']:
+                if col in df_temp.columns:
+                    df_temp[col] = df_temp[col].astype(str).str.strip()
+            
+            lista_dfs.append(df_temp)
 
-# Login Auditor
-df_auditores, auditor_valido = None, None
+        if lista_dfs:
+            df_final = pd.concat(lista_dfs, ignore_index=True)
+            st.session_state['resultados'] = df_final.to_dict('records')
+            st.sidebar.success(f"📦 Consolidado: {len(st.session_state['resultados'])} registros.")
+            
+    except Exception as e:
+        st.sidebar.error(f"Erro ao ler histórico: {e}")
+
+# Lógica de Login do Auditor
+df_auditores = None
+auditor_valido = None
+
 if uploaded_file:
     try:
-        xls = pd.ExcelFile(uploaded_file)
-        if 'Cadastro_Auditores' in xls.sheet_names:
-            df_auditores = pd.read_excel(uploaded_file, sheet_name='Cadastro_Auditores')
-            df_auditores['CPF_Auditor'] = df_auditores['CPF_Auditor'].astype(str).str.strip()
-            st.sidebar.markdown("---")
-            cpf_in = st.sidebar.text_input("Seu CPF (Login)", type="password")
-            if cpf_in:
-                match = df_auditores[df_auditores['CPF_Auditor'] == cpf_in.strip()]
-                if not match.empty:
-                    auditor_valido = {'Nome': match.iloc[0]['Nome_Auditor'], 'CPF': cpf_in}
-                    st.sidebar.success(f"Olá, {auditor_valido['Nome']}!")
-                else: st.sidebar.error("CPF inválido.")
-        else: auditor_valido = {'Nome': 'Geral', 'CPF': '000'}
-    except: pass
-
-st.sidebar.markdown("---")
-pagina = st.sidebar.radio("Navegação:", ["📝 Execução", "📊 Painel Gerencial"])
-
-# Leitura Base
-df_treinos, df_perguntas, dados_ok
