@@ -28,20 +28,28 @@ if os.path.exists("logo.png"):
 else:
     st.sidebar.write("🏢 DTO 01 - DCS 2025")
 
-# 1. Arquivo de Base (Obrigatório)
+# 1. Base (Obrigatória)
 uploaded_file = st.sidebar.file_uploader("1º Passo: Base de Dados (Excel)", type=["xlsx"], key="base")
 
-# 2. Arquivo de Histórico (Opcional - Para continuar trabalho)
+# 2. Histórico (Opcional)
 st.sidebar.markdown("---")
 st.sidebar.markdown("**Vai continuar uma auditoria anterior?**")
 uploaded_history = st.sidebar.file_uploader("2º Passo: Carregar Histórico (Opcional)", type=["xlsx"], key="hist")
 
-# --- LÓGICA DE CARREGAMENTO DO HISTÓRICO ---
-# Se o usuário subiu um histórico E a memória está vazia, carregamos os dados
+# --- LÓGICA DE CARREGAMENTO DO HISTÓRICO (CORRIGIDA) ---
 if uploaded_history is not None and not st.session_state['resultados']:
     try:
         df_hist = pd.read_excel(uploaded_history)
-        # Converte o Excel de volta para a lista de dicionários que o sistema entende
+        
+        # --- CORREÇÃO DO ERRO (NORMALIZAÇÃO DE TIPOS) ---
+        # Força CPF e Padrao a serem texto para bater com a Base de Dados
+        if 'CPF' in df_hist.columns:
+            df_hist['CPF'] = df_hist['CPF'].astype(str).str.strip()
+        if 'Padrao' in df_hist.columns:
+            df_hist['Padrao'] = df_hist['Padrao'].astype(str).str.strip()
+        if 'Pergunta' in df_hist.columns:
+            df_hist['Pergunta'] = df_hist['Pergunta'].astype(str).str.strip()
+            
         st.session_state['resultados'] = df_hist.to_dict('records')
         st.sidebar.success(f"♻️ Histórico restaurado! {len(st.session_state['resultados'])} registros carregados.")
     except Exception as e:
@@ -57,22 +65,25 @@ if uploaded_file:
         df_treinos = pd.read_excel(uploaded_file, sheet_name='Base_Treinamentos')
         df_perguntas = pd.read_excel(uploaded_file, sheet_name='Padroes_Perguntas')
         
-        # Blindagem
-        df_treinos['CPF'] = df_treinos['CPF'].astype(str)
-        df_treinos['Codigo_Padrao'] = df_treinos['Codigo_Padrao'].astype(str)
-        df_perguntas['Codigo_Padrao'] = df_perguntas['Codigo_Padrao'].astype(str)
+        # Blindagem Base de Dados
+        df_treinos['CPF'] = df_treinos['CPF'].astype(str).str.strip()
+        df_treinos['Codigo_Padrao'] = df_treinos['Codigo_Padrao'].astype(str).str.strip()
+        df_perguntas['Codigo_Padrao'] = df_perguntas['Codigo_Padrao'].astype(str).str.strip()
+        df_perguntas['Pergunta'] = df_perguntas['Pergunta'].astype(str).str.strip()
         
     except Exception as e:
         st.error(f"Erro ao ler base de dados: {e}")
         st.stop()
 
-    # --- DICIONÁRIO DE MEMÓRIA RÁPIDA ---
-    # Cria um mapa para saber rapidamente o que já foi respondido
-    # Chave: CPF_PADRAO_PERGUNTA -> Valor: {Resultado, Obs}
+    # --- MEMÓRIA RÁPIDA ---
     memoria_respostas = {}
     for item in st.session_state['resultados']:
-        # Cria uma chave única para busca
-        chave_unica = f"{item['CPF']}_{item['Padrao']}_{item['Pergunta']}"
+        # Cria chave garantindo que tudo é string e sem espaços extras
+        c = str(item['CPF']).strip()
+        p = str(item['Padrao']).strip()
+        q = str(item['Pergunta']).strip()
+        
+        chave_unica = f"{c}_{p}_{q}"
         memoria_respostas[chave_unica] = {
             "resultado": item['Resultado'],
             "obs": item['Observacao']
@@ -99,18 +110,18 @@ if uploaded_file:
             
             st.subheader(f"📍 Fila de Auditoria - {filial_selecionada}")
             
-            # --- RENDERIZAÇÃO ---
             for index, row in ranking.iterrows():
                 cpf = row['CPF']
                 nome = row['Nome_Funcionario']
                 qtd = row['Qtd_Padroes']
                 
-                # Feedback Visual: Se já tem respostas para esse CPF, mudamos o ícone ou cor (simulado)
-                # Verifica quantos itens desse CPF já estão na memória
-                respondidos_count = sum(1 for r in st.session_state['resultados'] if r['CPF'] == cpf)
+                # Feedback Visual (Ícone)
+                respondidos_count = sum(1 for r in st.session_state['resultados'] if str(r['CPF']).strip() == cpf)
                 status_icon = "✅" if respondidos_count > 0 else "👤"
                 
                 with st.expander(f"{status_icon} {nome} (Match: {qtd} | Respondidos: {respondidos_count})"):
+                    st.write(f"**CPF:** {cpf}")
+                    
                     padroes_do_funcionario = df_match[df_match['CPF'] == cpf]['Codigo_Padrao'].unique()
                     
                     with st.form(key=f"form_{cpf}"):
@@ -124,12 +135,10 @@ if uploaded_file:
                                 pergunta = p_row['Pergunta']
                                 chave_pergunta = f"{cpf}_{padrao}_{idx}"
                                 
-                                # --- LÓGICA DE RECUPERAÇÃO (RECALL) ---
-                                # Verifica se já existe resposta na memória
+                                # Busca na Memória (Usando chaves tratadas)
                                 chave_busca = f"{cpf}_{padrao}_{pergunta}"
                                 dados_previos = memoria_respostas.get(chave_busca)
                                 
-                                # Define valores iniciais
                                 index_previo = None
                                 obs_previa = ""
                                 
@@ -148,7 +157,7 @@ if uploaded_file:
                                     key=chave_pergunta,
                                     horizontal=True,
                                     label_visibility="collapsed",
-                                    index=index_previo # AQUI ESTÁ A MÁGICA: Preenche o que já estava salvo
+                                    index=index_previo # Preenchimento automático
                                 )
                                 obs = st.text_input("Observação", value=obs_previa, key=f"obs_{chave_pergunta}")
                                 st.markdown("---")
@@ -168,10 +177,11 @@ if uploaded_file:
                                     except:
                                         pergunta_texto = "Pergunta não localizada"
 
-                                    # UPSERT
+                                    # UPSERT (Atualização)
+                                    # Remove anterior garantindo comparação de string limpa
                                     st.session_state['resultados'] = [
                                         r for r in st.session_state['resultados'] 
-                                        if not (r['CPF'] == cpf and r['Padrao'] == padrao_ref and r['Pergunta'] == pergunta_texto)
+                                        if not (str(r['CPF']).strip() == cpf and str(r['Padrao']).strip() == padrao_ref and str(r['Pergunta']).strip() == pergunta_texto)
                                     ]
 
                                     st.session_state['resultados'].append({
