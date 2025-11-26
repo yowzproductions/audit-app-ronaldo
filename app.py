@@ -27,7 +27,7 @@ def obter_hora_brasilia():
     fuso = pytz.timezone('America/Sao_Paulo')
     return datetime.now(fuso).strftime("%d/%m/%Y %H:%M")
 
-# --- 4. BARRA LATERAL (UPLOADS E LOGIN) ---
+# --- 4. BARRA LATERAL ---
 st.sidebar.header("1. Configuração")
 
 # Logo
@@ -57,6 +57,14 @@ if uploaded_hist and not st.session_state['resultados']:
             df_temp.columns = [c.strip() for c in df_temp.columns]
             
             # Converte colunas chave para texto
-            for col in ['CPF', 'Padrao', 'Pergunta', 'Auditor_CPF']:
+            colunas_texto = ['CPF', 'Padrao', 'Pergunta', 'Auditor_CPF']
+            for col in colunas_texto:
                 if col in df_temp.columns:
-                    df_temp[col] = df_temp
+                    df_temp[col] = df_temp[col].astype(str).str.strip()
+            
+            lista_dfs.append(df_temp)
+
+        if lista_dfs:
+            df_final = pd.concat(lista_dfs, ignore_index=True)
+            st.session_state['resultados'] = df_final.to_dict('records')
+            qtd_regs = len(st.session_state['resultados'])
