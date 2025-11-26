@@ -44,12 +44,12 @@ uploaded_history = st.sidebar.file_uploader(
     key="hist"
 )
 
-# --- CARREGAMENTO DO HISTÓRICO (Refeito para evitar erros) ---
+# --- CARREGAMENTO DO HISTÓRICO ---
 if uploaded_history is not None and not st.session_state['resultados']:
     try:
         df_hist = pd.read_excel(uploaded_history)
         
-        # Tratamento de colunas em linhas separadas para segurança
+        # Tratamento de colunas
         if 'CPF' in df_hist.columns:
             df_hist['CPF'] = df_hist['CPF'].astype(str).str.strip()
             
@@ -91,10 +91,11 @@ if uploaded_file:
     # --- FILTROS GLOBAIS ---
     st.sidebar.header("3. Filtros")
     
+    # 1. FILIAIS (Lógica Selecionar Todas)
     todas_filiais = df_treinos['Filial'].unique()
-    usar_todas = st.sidebar.checkbox("Selecionar TODAS as Filiais", value=False)
+    usar_todas_filiais = st.sidebar.checkbox("Selecionar TODAS as Filiais", value=False)
     
-    if usar_todas:
+    if usar_todas_filiais:
         filiais_selecionadas = todas_filiais
         st.sidebar.info("Modo: Rede Completa")
     else:
@@ -103,11 +104,20 @@ if uploaded_file:
             todas_filiais
         )
     
+    st.sidebar.markdown("---")
+    
+    # 2. PADRÕES (Lógica Selecionar Todos - NOVO)
     padroes_disponiveis = df_perguntas['Codigo_Padrao'].unique()
-    padroes_selecionados = st.sidebar.multiselect(
-        "Selecione os Padrões", 
-        padroes_disponiveis
-    )
+    usar_todos_padroes = st.sidebar.checkbox("Selecionar TODOS os Padrões", value=False)
+    
+    if usar_todos_padroes:
+        padroes_selecionados = padroes_disponiveis
+        st.sidebar.info("Modo: Auditoria Completa")
+    else:
+        padroes_selecionados = st.sidebar.multiselect(
+            "Selecione os Padrões", 
+            padroes_disponiveis
+        )
 
     # Verifica filtros
     if len(filiais_selecionadas) > 0 and len(padroes_selecionados) > 0:
