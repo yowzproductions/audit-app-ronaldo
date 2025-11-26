@@ -6,6 +6,11 @@ from datetime import datetime
 # --- CONFIGURAÇÃO DA PÁGINA ---
 st.set_page_config(page_title="AuditFlow IA", layout="wide")
 
+# --- CORREÇÃO DO ERRO (INICIALIZAÇÃO SEGURA) ---
+# Cria a "caixa" de resultados vazia assim que o app abre
+if 'resultados' not in st.session_state:
+    st.session_state['resultados'] = []
+
 st.title("🛡️ AuditFlow - Gestão de Conformidade")
 st.markdown("---")
 
@@ -40,12 +45,12 @@ if uploaded_file:
 
     if filial_selecionada and padroes_selecionados:
         
-        # --- LÓGICA DE RANKING (A MÁGICA DO AION) ---
+        # --- LÓGICA DE RANKING ---
         
         # 1. Filtra funcionários da filial
         df_filial = df_treinos[df_treinos['Filial'] == filial_selecionada]
         
-        # 2. Filtra apenas os treinamentos que correspondem aos padrões selecionados pelo auditor
+        # 2. Filtra apenas os treinamentos que correspondem aos padrões selecionados
         df_match = df_filial[df_filial['Codigo_Padrao'].isin(padroes_selecionados)]
         
         if df_match.empty:
@@ -57,10 +62,6 @@ if uploaded_file:
             
             st.subheader(f"📍 Fila de Auditoria - {filial_selecionada}")
             st.info(f"Encontramos {len(ranking)} funcionários aptos para os padrões selecionados.")
-
-            # --- CRIAÇÃO DA LISTA DE RESULTADOS ---
-            if 'resultados' not in st.session_state:
-                st.session_state['resultados'] = []
 
             # --- RENDERIZAÇÃO DOS CARTÕES DE FUNCIONÁRIOS ---
             for index, row in ranking.iterrows():
@@ -128,12 +129,14 @@ if uploaded_file:
                                     "Observacao": obs_ref
                                 })
                             st.success(f"Auditoria de {nome} salva com sucesso!")
+                            st.rerun() # Atualiza a tela para mostrar novos resultados se houver
 
     # --- ÁREA DE DOWNLOAD ---
     st.markdown("---")
     st.header("📂 Exportar Resultados")
     
-    if st.session_state['resultados']:
+    # Verifica se a lista existe E se tem itens dentro
+    if st.session_state['resultados'] and len(st.session_state['resultados']) > 0:
         df_export = pd.DataFrame(st.session_state['resultados'])
         st.dataframe(df_export) # Mostra prévia
         
@@ -149,7 +152,7 @@ if uploaded_file:
             mime="application/vnd.ms-excel"
         )
     else:
-        st.info("Nenhuma auditoria realizada ainda.")
+        st.info("Nenhuma auditoria realizada ainda. Os resultados aparecerão aqui.")
 
 else:
     st.info("👈 Por favor, carregue o arquivo de dados na barra lateral para começar.")
