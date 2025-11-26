@@ -41,7 +41,6 @@ auditor_validado = None
 
 if uploaded_file:
     try:
-        # Tenta ler a aba de auditores (sem travar se não existir)
         xls = pd.ExcelFile(uploaded_file)
         if 'Cadastro_Auditores' in xls.sheet_names:
             df_auditores = pd.read_excel(uploaded_file, sheet_name='Cadastro_Auditores')
@@ -60,9 +59,8 @@ if uploaded_file:
                 else:
                     st.sidebar.error("CPF não autorizado.")
         else:
-            # Modo legado (sem login se não tiver aba)
+            # Modo legado (sem login)
             auditor_validado = {'Nome': 'Auditor Geral', 'CPF': '000'}
-            
     except Exception as e:
         st.sidebar.warning(f"Erro ao ler cadastro: {e}")
 
@@ -96,7 +94,11 @@ if uploaded_history_list and not st.session_state['resultados']:
 st.sidebar.markdown("---")
 pagina = st.sidebar.radio("Ir para:", ["📝 Execução da Auditoria", "📊 Painel Gerencial"])
 
-# --- LÓGICA PRINCIPAL ---
+# --- LEITURA DA BASE PRINCIPAL ---
+df_treinos = pd.DataFrame()
+df_perguntas = pd.DataFrame()
+dados_carregados = False
+
 if uploaded_file:
     try:
         df_treinos = pd.read_excel(uploaded_file, sheet_name='Base_Treinamentos')
@@ -108,59 +110,65 @@ if uploaded_file:
         df_perguntas['Codigo_Padrao'] = df_perguntas['Codigo_Padrao'].astype(str).str.strip()
         df_perguntas['Pergunta'] = df_perguntas['Pergunta'].astype(str).str.strip()
         
+        dados_carregados = True
     except Exception as e:
         st.error(f"Erro na Base de Dados: {e}")
         st.stop()
 
-    # --- FILTROS ---
-    st.sidebar.header("3. Filtros")
-    todas_filiais = df_treinos['Filial'].dropna().unique()
-    if st.sidebar.checkbox("Todas as Filiais", value=False):
-        filiais_selecionadas = list(todas_filiais)
+# =========================================================
+# PÁGINA 1: EXECUÇÃO DA AUDITORIA
+# =========================================================
+if pagina == "📝 Execução da Auditoria":
+    if not dados_carregados:
+        st.info("👈 Por favor, carregue a Base de Dados na barra lateral.")
     else:
-        filiais_selecionadas = st.sidebar.multiselect("Selecione Filiais", todas_filiais)
-    
-    padroes_disponis = df_perguntas['Codigo_Padrao'].dropna().unique()
-    if st.sidebar.checkbox("Todos os Padrões", value=False):
-        padroes_selecionados = list(padroes_disponis)
-    else:
-        padroes_selecionados = st.sidebar.multiselect("Selecione Padrões", padroes_disponis)
+        st.title("📝 Execução da Auditoria")
 
-    # Processamento
-    if len(filiais_selecionadas) > 0 and len(padroes_selecionados) > 0:
+        # TRAVA DE SEGURANÇA
+        if df_auditores is not None and auditor_validado is None:
+            st.warning("🔒 ACESSO BLOQUEADO: Identifique-se na barra lateral.")
+            st.stop()
+
+        # --- FILTROS LOCAIS DA EXECUÇÃO ---
+        st.sidebar.header("3. Filtros de Execução")
+        todas_filiais = df_treinos['Filial'].dropna().unique()
         
-        df_match = df_treinos[
-            (df_treinos['Filial'].isin(filiais_selecionadas)) & 
-            (df_treinos['Codigo_Padrao'].isin(padroes_selecionados))
-        ]
+        if st.sidebar.checkbox("Todas as Filiais", value=False):
+            filiais_selecionadas = list(todas_filiais)
+        else:
+            filiais_selecionadas = st.sidebar.multiselect("Selecione Filiais", todas_filiais)
+        
+        padroes_disponis = df_perguntas['Codigo_Padrao'].dropna().unique()
+        if st.sidebar.checkbox("Todos os Padrões", value=False):
+            padroes_selecionados = list(padroes_disponis)
+        else:
+            padroes_selecionados = st.sidebar.multiselect("Selecione Padrões", padroes_disponis)
 
-        ranking = df_match.groupby(['CPF', 'Nome_Funcionario', 'Filial']).size().reset_index(name='Qtd_Padroes')
-        ranking = ranking.sort_values(by=['Qtd_Padroes', 'Filial'], ascending=[False, True])
-
-        # Mapa de Perguntas
-        mapa_perguntas = {}
-        for padrao in padroes_selecionados:
-            perguntas = df_perguntas[df_perguntas['Codigo_Padrao'] == padrao]
-            mapa_perguntas[padrao] = list(zip(perguntas.index, perguntas['Pergunta']))
-
-        # =========================================================
-        # PÁGINA 1: EXECUÇÃO
-        # =========================================================
-        if pagina == "📝 Execução da Auditoria":
-            st.title("📝 Execução da Auditoria")
-            
-            # TRAVA DE SEGURANÇA (Se a aba existir)
-            if df_auditores is not None and auditor_validado is None:
-                st.warning("🔒 ACESSO BLOQUEADO: Identifique-se na barra lateral.")
-                st.stop()
-            
-            nome_aud_display = auditor_validado['Nome'] if auditor_validado else "Não identificado"
-            st.markdown(f"**Auditor:** {nome_aud_display} | **Escopo:** {len(filiais_selecionadas)} Filiais")
+        if not filiais_selecionadas or not padroes_selecionados:
+            st.info("👈 Selecione Filiais e Padrões na barra lateral para carregar a fila.")
+        else:
+            nome_aud_display = auditor_validado['Nome'] if auditor_validado else "Geral"
+            st.markdown(f"**Auditor:** {nome_aud_display} | **Filtro:** {len(filiais_selecionadas)} Filiais")
             st.markdown("---")
 
+            # Processamento da Fila
+            df_match = df_treinos[
+                (df_treinos['Filial'].isin(filiais_selecionadas)) & 
+                (df_treinos['Codigo_Padrao'].isin(padroes_selecionados))
+            ]
+
             if df_match.empty:
-                st.warning("Nenhum funcionário encontrado.")
+                st.warning("Nenhum funcionário encontrado para estes filtros.")
             else:
+                ranking = df_match.groupby(['CPF', 'Nome_Funcionario', 'Filial']).size().reset_index(name='Qtd_Padroes')
+                ranking = ranking.sort_values(by=['Qtd_Padroes', 'Filial'], ascending=[False, True])
+
+                # Mapa de Perguntas
+                mapa_perguntas = {}
+                for padrao in padroes_selecionados:
+                    perguntas = df_perguntas[df_perguntas['Codigo_Padrao'] == padrao]
+                    mapa_perguntas[padrao] = list(zip(perguntas.index, perguntas['Pergunta']))
+
                 # Paginação
                 total_funcionarios = len(ranking)
                 ITENS_POR_PAGINA = 10
@@ -190,11 +198,11 @@ if uploaded_file:
 
                 st.markdown("---")
 
+                # Renderização dos Cards
                 for idx, row in ranking_pagina.iterrows():
                     cpf = row['CPF']
                     nome = row['Nome_Funcionario']
                     filial = row['Filial']
-                    qtd_pads = row['Qtd_Padroes']
                     
                     resps_salvas = sum(1 for r in st.session_state['resultados'] if str(r.get('CPF','')).strip() == cpf)
                     icon = "⚪" if resps_salvas == 0 else "🟢"
@@ -202,10 +210,14 @@ if uploaded_file:
                     with st.expander(f"{icon} {nome} | {filial}"):
                         pads_func = df_match[df_match['CPF'] == cpf]['Codigo_Padrao'].unique()
                         
+                        # --- FORMULÁRIO (CORRIGIDO) ---
                         with st.form(key=f"form_{cpf}"):
                             respostas_form = {}
+                            
+                            # Loop de Padrões
                             for padrao in pads_func:
                                 st.markdown(f"**--- Padrão {padrao} ---**")
+                                # Loop de Perguntas
                                 for idx_p, txt_p in mapa_perguntas.get(padrao, []):
                                     key_p = f"{cpf}_{padrao}_{idx_p}"
                                     key_b = f"{cpf}_{padrao}_{txt_p}"
@@ -216,3 +228,59 @@ if uploaded_file:
                                         opts = ["Conforme", "Não Conforme", "Não se Aplica"]
                                         if dados['res'] in opts: idx_val = opts.index(dados['res'])
                                         obs_val = dados['obs'] if not pd.isna(dados['obs']) else ""
+
+                                    st.write(txt_p)
+                                    respostas_form[key_p] = st.radio("R", ["Conforme", "Não Conforme", "Não se Aplica"], key=key_p, horizontal=True, label_visibility="collapsed", index=idx_val)
+                                    st.text_input("Obs", value=obs_val, key=f"obs_{key_p}")
+                                    st.markdown("---")
+                            
+                            # --- BOTÃO DE SUBMIT (AGORA DENTRO DO FORM, MAS FORA DOS LOOPS) ---
+                            submitted = st.form_submit_button("💾 Salvar")
+                            
+                            if submitted:
+                                data_hora = obter_hora_brasilia()
+                                salvos = 0
+                                for k, res in respostas_form.items():
+                                    if res is not None:
+                                        _, pad_ref, idx_ref = k.split('_', 2)
+                                        try: p_txt = df_perguntas.loc[int(idx_ref), 'Pergunta']
+                                        except: p_txt = "Erro"
+                                        
+                                        # Remove anterior
+                                        st.session_state['resultados'] = [r for r in st.session_state['resultados'] if not (str(r.get('CPF','')).strip() == cpf and str(r.get('Padrao','')).strip() == pad_ref and str(r.get('Pergunta','')).strip() == p_txt)]
+                                        
+                                        obs_ref = st.session_state.get(f"obs_{k}", "")
+                                        novo_reg = {
+                                            "Data": data_hora, "Filial": filial, "Funcionario": nome, "CPF": cpf,
+                                            "Padrao": pad_ref, "Pergunta": p_txt, "Resultado": res, "Observacao": obs_ref
+                                        }
+                                        if auditor_validado:
+                                            novo_reg["Auditor_Nome"] = auditor_validado['Nome']
+                                            novo_reg["Auditor_CPF"] = auditor_validado['CPF']
+                                            
+                                        st.session_state['resultados'].append(novo_reg)
+                                        salvos += 1
+                                if salvos > 0:
+                                    st.success("Salvo com sucesso!")
+                                    st.rerun()
+
+# =========================================================
+# PÁGINA 2: DASHBOARD (SEPARADO E INDEPENDENTE)
+# =========================================================
+elif pagina == "📊 Painel Gerencial":
+    st.title("📊 Painel Gerencial & Rastreabilidade")
+    
+    if not dados_carregados:
+        st.info("👈 Por favor, carregue a Base de Dados para ver os KPIs.")
+    elif not st.session_state['resultados']:
+        st.info("Sem dados consolidados. Carregue históricos ou realize auditorias.")
+    else:
+        df_resultados = pd.DataFrame(st.session_state['resultados'])
+        
+        # --- FILTROS DO DASHBOARD ---
+        st.sidebar.header("3. Filtros do Dashboard")
+        filiais_dash = df_treinos['Filial'].dropna().unique()
+        filiais_sel_dash = st.sidebar.multiselect("Filtrar KPIs por Filial", filiais_dash, default=filiais_dash)
+
+        # 1. Auditoria de Conflitos (Sempre visível)
+        st.markdown("
