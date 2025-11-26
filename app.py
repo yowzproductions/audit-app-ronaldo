@@ -12,7 +12,7 @@ st.set_page_config(
     layout="wide"
 )
 
-# --- 2. INICIALIZAÇÃO DE MEMÓRIA (SESSION STATE) ---
+# --- 2. INICIALIZAÇÃO DE MEMÓRIA ---
 if 'resultados' not in st.session_state:
     st.session_state['resultados'] = []
 
@@ -59,21 +59,4 @@ if uploaded_hist and not st.session_state['resultados']:
             # Converte colunas chave para texto
             for col in ['CPF', 'Padrao', 'Pergunta', 'Auditor_CPF']:
                 if col in df_temp.columns:
-                    df_temp[col] = df_temp[col].astype(str).str.strip()
-            
-            lista_dfs.append(df_temp)
-
-        if lista_dfs:
-            df_final = pd.concat(lista_dfs, ignore_index=True)
-            st.session_state['resultados'] = df_final.to_dict('records')
-            st.sidebar.success(f"📦 Consolidado: {len(st.session_state['resultados'])} registros.")
-            
-    except Exception as e:
-        st.sidebar.error(f"Erro ao ler histórico: {e}")
-
-# Lógica de Login do Auditor
-df_auditores = None
-auditor_valido = None
-
-if uploaded_file:
-    try:
+                    df_temp[col] = df_temp
