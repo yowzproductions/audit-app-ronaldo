@@ -3,6 +3,7 @@ import pandas as pd
 from io import BytesIO
 from datetime import datetime
 import os
+import pytz # Biblioteca de Fuso Horário
 
 # --- CONFIGURAÇÃO DA PÁGINA (BRANDING DTO 01) ---
 st.set_page_config(
@@ -15,14 +16,17 @@ st.set_page_config(
 if 'resultados' not in st.session_state:
     st.session_state['resultados'] = []
 
+# --- FUNÇÃO DE HORÁRIO BRASÍLIA ---
+def obter_hora_brasilia():
+    fuso = pytz.timezone('America/Sao_Paulo')
+    return datetime.now(fuso).strftime("%d/%m/%Y %H:%M")
+
 # --- BARRA LATERAL COM LOGO E NOME ---
 st.sidebar.header("1. Carga de Dados")
 
-# Tenta carregar a logo se ela existir no GitHub
 if os.path.exists("logo.png"):
     st.sidebar.image("logo.png", use_container_width=True)
 else:
-    # Se não achar a imagem, mostra o novo nome
     st.sidebar.write("🏢 DTO 01 - DCS 2025")
 
 uploaded_file = st.sidebar.file_uploader("Suba o arquivo Excel (dados_auditoria.xlsx)", type=["xlsx"])
@@ -98,7 +102,8 @@ if uploaded_file:
                                 
                                 st.write(pergunta)
                                 
-                                # Começa vazio (index=None)
+                                # Tenta pré-carregar valor se já existir no histórico (Opcional, mas avançado)
+                                # Por enquanto mantemos index=None para forçar atenção do auditor
                                 respostas[chave_pergunta] = st.radio(
                                     "Avaliação", 
                                     ["Conforme", "Não Conforme", "Não se Aplica"], 
@@ -110,10 +115,10 @@ if uploaded_file:
                                 obs = st.text_input("Observação", key=f"obs_{chave_pergunta}")
                                 st.markdown("---")
 
-                        submit = st.form_submit_button("✅ Salvar Respostas Preenchidas")
+                        submit = st.form_submit_button("✅ Salvar/Atualizar Respostas")
                         
                         if submit:
-                            data_hora = datetime.now().strftime("%d/%m/%Y %H:%M")
+                            data_hora = obter_hora_brasilia()
                             itens_salvos = 0
                             
                             for chave, resultado in respostas.items():
@@ -125,6 +130,16 @@ if uploaded_file:
                                     except:
                                         pergunta_texto = "Pergunta não localizada"
 
+                                    # --- LÓGICA DE ATUALIZAÇÃO (UPSERT) ---
+                                    # Antes de adicionar, removemos qualquer registro anterior 
+                                    # que tenha o mesmo CPF, Padrão e Pergunta.
+                                    # Isso garante que a informação seja atualizada e não duplicada.
+                                    st.session_state['resultados'] = [
+                                        r for r in st.session_state['resultados'] 
+                                        if not (r['CPF'] == cpf and r['Padrao'] == padrao_ref and r['Pergunta'] == pergunta_texto)
+                                    ]
+
+                                    # Adiciona o novo registro (agora limpo)
                                     st.session_state['resultados'].append({
                                         "Data": data_hora,
                                         "Filial": filial_selecionada,
@@ -138,31 +153,44 @@ if uploaded_file:
                                     itens_salvos += 1
                             
                             if itens_salvos > 0:
-                                st.success(f"{itens_salvos} respostas de {nome} foram salvas!")
+                                st.success(f"{itens_salvos} respostas de {nome} foram salvas/atualizadas!")
                                 st.rerun()
                             else:
-                                st.warning("Você não selecionou nenhuma resposta. Nada foi salvo.")
+                                st.warning("Você não selecionou nenhuma resposta.")
 
-    # --- DOWNLOAD ---
+    # --- ÁREA DE GESTÃO DE DADOS ---
     st.markdown("---")
-    st.header("📂 Exportar Resultados")
+    st.header("📂 Gestão de Resultados")
     
+    col_download, col_limpar = st.columns([3, 1])
+
     if st.session_state['resultados']:
         df_export = pd.DataFrame(st.session_state['resultados'])
-        st.dataframe(df_export)
         
-        output = BytesIO()
-        with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-            df_export.to_excel(writer, index=False, sheet_name='Auditoria')
+        with col_download:
+            st.dataframe(df_export, height=200) # Mostra prévia
+            
+            output = BytesIO()
+            with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+                df_export.to_excel(writer, index=False, sheet_name='Auditoria')
+            
+            file_name_date = obter_hora_brasilia().replace("/","-").replace(":", "h").replace(" ", "_")
+            st.download_button(
+                label="📥 Baixar Excel Completo",
+                data=output.getvalue(),
+                file_name=f"Auditoria_DTO01_{file_name_date}.xlsx",
+                mime="application/vnd.ms-excel"
+            )
         
-        st.download_button(
-            label="📥 Baixar Planilha de Resultados",
-            data=output.getvalue(),
-            file_name="resultado_DTO01_DCS.xlsx",
-            mime="application/vnd.ms-excel"
-        )
+        with col_limpar:
+            st.write("") # Espaço para alinhar
+            st.write("") 
+            # Botão de Limpeza com verificação de segurança (não pede senha, mas exige clique)
+            if st.button("🗑️ LIMPAR Histórico", type="primary", help="Apaga todos os dados da sessão atual para começar do zero"):
+                st.session_state['resultados'] = []
+                st.rerun()
     else:
-        st.info("Nenhuma auditoria realizada ainda.")
+        st.info("Nenhuma auditoria realizada nesta sessão.")
 
 else:
     st.info("👈 Por favor, carregue o arquivo de dados na barra lateral para começar.")
