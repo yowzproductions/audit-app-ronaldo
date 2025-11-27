@@ -111,18 +111,16 @@ if pagina == "📝 EXECUTAR DTO 01":
             
             if df_m.empty: st.warning("Sem dados.")
             else:
-                # Mapa de Nomes
+                # Mapa de Nomes e Metas
                 mapa_nomes = {}
-                if 'Nome_Padrao' in df_perguntas.columns:
-                    tn = df_perguntas[['Codigo_Padrao', 'Nome_Padrao']].drop_duplicates()
-                    # Garante chaves como string
-                    mapa_nomes = pd.Series(tn.Nome_Padrao.values, index=tn.Codigo_Padrao.astype(str).str.strip()).to_dict()
-
-                # Mapa de Metas (Quantas perguntas tem cada padrão?)
-                # Garante que o índice é string para bater com a busca depois
+                # Garante que chaves de meta sejam string limpa
                 meta_por_padrao = df_perguntas.groupby('Codigo_Padrao').size()
                 meta_por_padrao.index = meta_por_padrao.index.astype(str).str.strip()
                 dict_metas = meta_por_padrao.to_dict()
+                
+                if 'Nome_Padrao' in df_perguntas.columns:
+                    tn = df_perguntas[['Codigo_Padrao', 'Nome_Padrao']].drop_duplicates()
+                    mapa_nomes = pd.Series(tn.Nome_Padrao.values, index=tn.Codigo_Padrao.astype(str).str.strip()).to_dict()
 
                 rank = df_m.groupby(['CPF','Nome_Funcionario','Filial']).size().reset_index(name='Qtd')
                 rank = rank.sort_values(by=['Qtd','Filial'], ascending=[False,True])
@@ -137,7 +135,7 @@ if pagina == "📝 EXECUTAR DTO 01":
                 
                 pg_rank = rank.iloc[st.session_state['pagina_atual']*10 : (st.session_state['pagina_atual']+1)*10]
                 
-                # Memória Otimizada
+                # Memória Rápida
                 memoria = {}
                 for r in st.session_state['resultados']:
                     k = f"{str(r.get('CPF','')).strip()}_{str(r.get('Padrao','')).strip()}_{str(r.get('Pergunta','')).strip()}"
@@ -147,30 +145,35 @@ if pagina == "📝 EXECUTAR DTO 01":
                     cpf_func = str(row['CPF']).strip()
                     nome = row['Nome_Funcionario']
                     filial = row['Filial']
-                    qtd_pads = row['Qtd']
                     
-                    # --- CÁLCULO DE STATUS CORRIGIDO ---
-                    # 1. Quais padrões esse funcionário tem (no filtro atual)?
-                    pads_no_filtro = df_m[df_m['CPF'].astype(str).str.strip() == cpf_func]['Codigo_Padrao'].unique()
-                    pads_no_filtro = [str(p).strip() for p in pads_no_filtro]
+                    # --- CÁLCULO DE STATUS ROBUSTO ---
+                    # 1. Padrões que o funcionário tem (String Limpa)
+                    raw_pads = df_m[df_m['CPF'].astype(str).str.strip() == cpf_func]['Codigo_Padrao'].unique()
+                    pads_no_filtro = [str(p).strip() for p in raw_pads]
                     
-                    # 2. Qual a meta total de perguntas para esses padrões?
+                    # 2. Meta Total (Soma das perguntas desses padrões)
                     meta_total = sum(dict_metas.get(p, 0) for p in pads_no_filtro)
                     
-                    # 3. Quantas respostas JÁ EXISTEM na memória para esse CPF nesses padrões?
+                    # 3. Realizado (Varredura direta na memória)
+                    # Filtra todas as respostas que são deste CPF
+                    resps_deste_cpf = [r for r in st.session_state['resultados'] if str(r.get('CPF','')).strip() == cpf_func]
+                    
+                    # Conta quantas dessas respostas pertencem aos padrões filtrados
                     respondidos = 0
-                    for r in st.session_state['resultados']:
-                        r_cpf = str(r.get('CPF','')).strip()
-                        r_pad = str(r.get('Padrao','')).strip()
-                        if r_cpf == cpf_func and r_pad in pads_no_filtro:
+                    for r in resps_deste_cpf:
+                        pad_r = str(r.get('Padrao','')).strip()
+                        if pad_r in pads_no_filtro:
                             respondidos += 1
                     
-                    # 4. Define Ícone
+                    # 4. Ícone + Contador Visual (Ex: 🟡 João (2/5))
+                    status_text = f"({respondidos}/{meta_total})"
+                    
                     if respondidos == 0: icon = "⚪"
                     elif respondidos >= meta_total and meta_total > 0: icon = "🟢"
                     else: icon = "🟡"
                     
-                    with st.expander(f"{icon} {nome} | {filial} ({qtd_pads} Padrões)"):
+                    with st.expander(f"{icon} {nome} | {filial} {status_text}"):
+                        # Recupera os padrões originais para o loop
                         pads_originais = df_m[df_m['CPF'].astype(str).str.strip() == cpf_func]['Codigo_Padrao'].unique()
                         
                         with st.form(key=f"f_{cpf_func}"):
@@ -265,21 +268,18 @@ elif pagina == "📊 Painel Gerencial":
             if 'Filial' in df_res.columns and 'Padrao' in df_res.columns:
                 df_rf = df_res[(df_res['Filial'].isin(f_sel)) & (df_res['Padrao'].isin(p_sel))]
         
-        # Metas (Dicionário Seguro)
-        # Garante que as chaves de meta sejam string limpa
+        # Mapa de Metas
         aux_meta = df_perguntas.groupby('Codigo_Padrao').size()
         aux_meta.index = aux_meta.index.astype(str).str.strip()
         metas = aux_meta.to_dict()
         
-        # Respostas (Dicionário Seguro)
+        # Respostas
         resps = {}
         if not df_rf.empty and 'CPF' in df_rf.columns:
-            # Importante: Agrupar garantindo tipagem
             temp = df_rf.copy()
             temp['CPF'] = temp['CPF'].astype(str).str.strip()
             resps = temp.groupby('CPF').size().to_dict()
         
-        # --- SELETOR DE VISÃO ---
         st.write("Modo de Visualização:")
         visao = st.radio("Escolha:", ["👥 Por Pessoa", "📏 Por Padrão (Volume)"], horizontal=True, label_visibility="collapsed")
         st.markdown("---")
@@ -292,14 +292,12 @@ elif pagina == "📊 Painel Gerencial":
             cpfs_unicos = df_esc['CPF'].astype(str).str.strip().unique()
             
             for cpf in cpfs_unicos:
-                # Filtra escopo deste CPF
                 escopo_cpf = df_esc[df_esc['CPF'].astype(str).str.strip() == cpf]
                 pads_pessoa = escopo_cpf['Codigo_Padrao'].astype(str).str.strip().unique()
                 
                 meta = sum(metas.get(p,0) for p in pads_pessoa)
                 real = resps.get(cpf, 0)
                 
-                # Info para tabela
                 info = escopo_cpf.iloc[0]
                 
                 if real == 0: 
@@ -335,18 +333,15 @@ elif pagina == "📊 Painel Gerencial":
                 st.download_button("📥 Baixar Status Pessoas", gerar_excel(df_det), "Status_Pessoas.xlsx")
 
         else:
-            # --- CÁLCULO POR PADRÃO (VOLUMETRIA) ---
             total_vol = len(df_esc) 
             counts_vol = {'Zero': 0, 'Iniciado': 0, 'Completo': 0}
             volumetria = []
             
-            # Mapa Nomes Padrão
             mapa_nomes = {}
             if 'Nome_Padrao' in df_perguntas.columns:
                 tn = df_perguntas[['Codigo_Padrao', 'Nome_Padrao']].drop_duplicates()
                 mapa_nomes = pd.Series(tn.Nome_Padrao.values, index=tn.Codigo_Padrao.astype(str).str.strip()).to_dict()
             
-            # Prepara respostas detalhadas (CPF, Padrão) -> Qtd
             resps_det = {}
             if not df_rf.empty:
                 temp_rf = df_rf.copy()
@@ -354,11 +349,9 @@ elif pagina == "📊 Painel Gerencial":
                 temp_rf['Padrao'] = temp_rf['Padrao'].astype(str).str.strip()
                 resps_det = temp_rf.groupby(['CPF', 'Padrao']).size().to_dict()
 
-            # Itera sobre cada atribuição (Linha do escopo)
             for _, row in df_esc.iterrows():
                 c = str(row['CPF']).strip()
                 p = str(row['Codigo_Padrao']).strip()
-                
                 meta = metas.get(p, 0)
                 real = resps_det.get((c, p), 0)
                 
@@ -366,16 +359,11 @@ elif pagina == "📊 Painel Gerencial":
                 elif real >= meta and meta > 0: counts_vol['Completo'] += 1
                 else: counts_vol['Iniciado'] += 1
 
-            # Tabela Agrupada
             padroes_unicos = df_esc['Codigo_Padrao'].astype(str).str.strip().unique()
             for p in padroes_unicos:
-                # Filtra escopo para este padrão
-                linhas_p = df_esc[df_esc['Codigo_Padrao'].astype(str).str.strip() == p]
-                qtd_meta = len(linhas_p)
-                
-                # Conta concluidos neste padrão
+                qtd_meta = len(df_esc[df_esc['Codigo_Padrao'].astype(str).str.strip() == p])
                 concluidos_este = 0
-                for _, r_esc in linhas_p.iterrows():
+                for _, r_esc in df_esc[df_esc['Codigo_Padrao'].astype(str).str.strip() == p].iterrows():
                     c_check = str(r_esc['CPF']).strip()
                     meta_check = metas.get(p, 0)
                     real_check = resps_det.get((c_check, p), 0)
@@ -384,12 +372,9 @@ elif pagina == "📊 Painel Gerencial":
 
                 nome_p = mapa_nomes.get(p, p)
                 pct = int((concluidos_este / qtd_meta)*100) if qtd_meta > 0 else 0
-                
                 volumetria.append({
-                    "Código": p, "Descrição": nome_p, 
-                    "Volume Total (Auditorias)": qtd_meta, 
-                    "Concluídas": concluidos_este, 
-                    "% Cobertura": f"{pct}%"
+                    "Código": p, "Descrição": nome_p, "Volume Total": qtd_meta, 
+                    "Concluídas": concluidos_este, "% Cobertura": f"{pct}%"
                 })
 
             c1,c2,c3,c4 = st.columns(4)
