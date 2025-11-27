@@ -17,12 +17,10 @@ if 'auditor_logado' not in st.session_state: st.session_state['auditor_logado'] 
 def obter_hora():
     return datetime.now(pytz.timezone('America/Sao_Paulo')).strftime("%d/%m/%Y %H:%M")
 
-def gerar_excel():
-    if not st.session_state['resultados']: return None
-    df = pd.DataFrame(st.session_state['resultados'])
+def gerar_excel(df_input):
     out = BytesIO()
     with pd.ExcelWriter(out, engine='xlsxwriter') as writer:
-        df.to_excel(writer, index=False)
+        df_input.to_excel(writer, index=False)
     return out.getvalue()
 
 # --- 4. BARRA LATERAL ---
@@ -68,14 +66,14 @@ if uploaded_file:
         else: auditor_valido = {'Nome': 'Geral', 'CPF': '000'}
     except: pass
 
-# Sidebar Download
+# Sidebar Download Rápido
 if st.session_state['resultados']:
     st.sidebar.markdown("---")
-    st.sidebar.write("📂 **Exportar Dados**")
-    excel_data = gerar_excel()
-    if excel_data:
-        nome_arq = f"Auditoria_{obter_hora().replace('/','-').replace(':','h')}.xlsx"
-        st.sidebar.download_button("📥 Baixar Planilha", excel_data, nome_arq, mime="application/vnd.ms-excel")
+    st.sidebar.write("📂 **Exportar Respostas**")
+    df_raw = pd.DataFrame(st.session_state['resultados'])
+    excel_data = gerar_excel(df_raw)
+    nome_arq = f"Respostas_{obter_hora().replace('/','-').replace(':','h')}.xlsx"
+    st.sidebar.download_button("📥 Baixar Planilha Bruta", excel_data, nome_arq, mime="application/vnd.ms-excel")
 
 st.sidebar.markdown("---")
 pagina = st.sidebar.radio("Menu:", ["📝 EXECUTAR DTO 01", "📊 Painel Gerencial"])
@@ -114,7 +112,6 @@ if pagina == "📝 EXECUTAR DTO 01":
             else:
                 mapa_nomes = {}
                 meta_por_padrao = df_perguntas.groupby('Codigo_Padrao').size().to_dict()
-                
                 if 'Nome_Padrao' in df_perguntas.columns:
                     tn = df_perguntas[['Codigo_Padrao', 'Nome_Padrao']].drop_duplicates()
                     mapa_nomes = pd.Series(tn.Nome_Padrao.values, index=tn.Codigo_Padrao).to_dict()
@@ -154,7 +151,6 @@ if pagina == "📝 EXECUTAR DTO 01":
                             col_save_top, _ = st.columns([1, 4])
                             submit_top = col_save_top.form_submit_button("💾 Salvar", key=f"stop_{cpf}")
                             st.markdown("---")
-
                             resps, obss = {}, {}
                             for p in pads:
                                 nome_p = mapa_nomes.get(p, "")
@@ -188,26 +184,21 @@ if pagina == "📝 EXECUTAR DTO 01":
                                         cnt+=1
                                 if cnt: st.success("Salvo!"); st.rerun()
                 
-                # --- ÁREA DE CONFERÊNCIA RESTAURADA ---
                 st.markdown("---")
-                st.subheader("📋 Resumo das Auditorias (Sessão Atual)")
-                
+                st.subheader("📋 Resumo Sessão")
                 if st.session_state['resultados']:
-                    df_view = pd.DataFrame(st.session_state['resultados'])
-                    st.dataframe(df_view, use_container_width=True)
-                    
-                    if st.button("🗑️ Apagar Todo o Histórico", type="primary", key="limpar_exec"):
+                    st.dataframe(pd.DataFrame(st.session_state['resultados']), use_container_width=True)
+                    if st.button("🗑️ Apagar Tudo", type="primary", key="limpar_exec"):
                         st.session_state['resultados'] = []
                         st.rerun()
-                else:
-                    st.info("Nenhuma auditoria realizada ainda.")
+                else: st.info("Vazio.")
 
 # ================= PAINEL =================
 elif pagina == "📊 Painel Gerencial":
     st.title("📊 Painel Gerencial")
     if not dados_ok: st.info("👈 Carregue a Base.")
     else:
-        with st.expander("🔍 Raio-X (Erros de Cadastro)", expanded=False):
+        with st.expander("🔍 Raio-X (Erros)", expanded=False):
             colisao = df_treinos.groupby('CPF')['Nome_Funcionario'].nunique()
             errados = colisao[colisao > 1]
             if not errados.empty:
@@ -226,35 +217,110 @@ elif pagina == "📊 Painel Gerencial":
         
         st.markdown("---")
         
+        # --- CÁLCULO GERAL DE STATUS ---
         df_esc = df_treinos[(df_treinos['Filial'].isin(f_sel)) & (df_treinos['Codigo_Padrao'].isin(p_sel))]
-        total = df_esc['CPF'].nunique()
-        concluidos = 0
         
+        # Prepara dados
         df_res = pd.DataFrame(st.session_state['resultados'])
         df_rf = pd.DataFrame()
         if not df_res.empty:
             if 'Filial' in df_res.columns and 'Padrao' in df_res.columns:
                 df_rf = df_res[(df_res['Filial'].isin(f_sel)) & (df_res['Padrao'].isin(p_sel))]
         
+        resps = {}
         if not df_rf.empty and 'CPF' in df_rf.columns:
             resps = df_rf.groupby('CPF').size().to_dict()
-            metas = df_perguntas.groupby('Codigo_Padrao').size().to_dict()
-            for cpf in df_esc['CPF'].unique():
-                pads = df_esc[df_esc['CPF']==cpf]['Codigo_Padrao'].unique()
-                meta = sum(metas.get(p,0) for p in pads)
-                if resps.get(cpf,0) >= meta and meta>0: concluidos+=1
         
-        c1,c2 = st.columns(2)
-        c1.metric("Total Pessoas (Meta)", total)
-        prog = concluidos/total if total else 0
-        c2.metric("Concluídos", concluidos, f"{int(prog*100)}%")
-        st.progress(prog)
+        metas = df_perguntas.groupby('Codigo_Padrao').size().to_dict()
+        
+        # Classificação dos Funcionários
+        lista_status = []
+        
+        # Pega lista única de CPFs no escopo filtrado
+        cpfs_no_escopo = df_esc['CPF'].unique()
+        
+        counts = {'Pendente': 0, 'Parcial': 0, 'Concluido': 0}
+        
+        for cpf in cpfs_no_escopo:
+            # Dados do funcionário
+            info = df_esc[df_esc['CPF'] == cpf].iloc[0]
+            nome = info['Nome_Funcionario']
+            filial = info['Filial']
+            
+            # Cálculo Meta
+            pads = df_esc[df_esc['CPF']==cpf]['Codigo_Padrao'].unique()
+            meta = sum(metas.get(p,0) for p in pads)
+            
+            # Cálculo Realizado
+            real = resps.get(cpf, 0)
+            
+            # Define Status
+            if real == 0:
+                status = "🔴 Pendente"
+                counts['Pendente'] += 1
+            elif real >= meta and meta > 0:
+                status = "🟢 Concluído"
+                counts['Concluido'] += 1
+            else:
+                status = "🟡 Parcial"
+                counts['Parcial'] += 1
+            
+            # Percentual
+            pct = int((real/meta)*100) if meta > 0 else 0
+            
+            lista_status.append({
+                "Filial": filial,
+                "CPF": cpf,
+                "Nome": nome,
+                "Status": status,
+                "Progresso": f"{real}/{meta} ({pct}%)",
+                "Meta": meta,
+                "Realizado": real
+            })
+            
+        df_detalhado = pd.DataFrame(lista_status)
+        
+        # --- EXIBIÇÃO ---
+        total = len(cpfs_no_escopo)
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("Total Pessoas", total)
+        c2.metric("Concluídos", counts['Concluido'])
+        c3.metric("Parcial", counts['Parcial'])
+        c4.metric("Pendentes", counts['Pendente'])
+        
+        prog = counts['Concluido']/total if total else 0
+        st.progress(prog, f"Taxa de Conclusão Total: {int(prog*100)}%")
         
         st.markdown("---")
-        b1,b2 = st.columns([3,1])
-        if not df_res.empty:
-            out = BytesIO()
-            with pd.ExcelWriter(out, engine='xlsxwriter') as writer: df_res.to_excel(writer, index=False)
-            b1.download_button("📥 Baixar Excel", out.getvalue(), f"Master_{obter_hora().replace('/','-')}.xlsx")
+        st.subheader("🕵️ Detalhe por Funcionário (Quem falta?)")
         
-        if b2.button("🗑️ Limpar Tudo", key="limpar_dash"): st.session_state['resultados']=[]; st.rerun()
+        tab1, tab2, tab3 = st.tabs(["🔴 Pendentes", "🟡 Em Andamento", "🟢 Concluídos"])
+        
+        if not df_detalhado.empty:
+            with tab1:
+                st.dataframe(df_detalhado[df_detalhado['Status'].str.contains("Pendente")][['Filial','Nome','Progresso']], use_container_width=True, hide_index=True)
+            with tab2:
+                st.dataframe(df_detalhado[df_detalhado['Status'].str.contains("Parcial")][['Filial','Nome','Progresso']], use_container_width=True, hide_index=True)
+            with tab3:
+                st.dataframe(df_detalhado[df_detalhado['Status'].str.contains("Concluído")][['Filial','Nome','Progresso']], use_container_width=True, hide_index=True)
+        else:
+            st.info("Nenhum funcionário no filtro selecionado.")
+
+        st.markdown("---")
+        
+        # Downloads
+        col_d1, col_d2, col_trash = st.columns([2, 2, 1])
+        
+        # 1. Download Relatório de Status (NOVO)
+        if not df_detalhado.empty:
+            excel_status = gerar_excel(df_detalhado)
+            col_d1.download_button("📥 Baixar Status Geral (Quem fez o quê)", excel_status, f"Status_Geral_{obter_hora().replace('/','-')}.xlsx")
+        
+        # 2. Download Respostas Brutas (Original)
+        if not df_res.empty:
+            excel_raw = gerar_excel(df_res)
+            col_d2.download_button("📥 Baixar Respostas Detalhadas", excel_raw, f"Master_Respostas_{obter_hora().replace('/','-')}.xlsx")
+        
+        if col_trash.button("🗑️ Limpar", key="trash_dash"):
+            st.session_state['resultados'] = []
+            st.rerun()
