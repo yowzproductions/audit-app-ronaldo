@@ -17,6 +17,14 @@ if 'auditor_logado' not in st.session_state: st.session_state['auditor_logado'] 
 def obter_hora():
     return datetime.now(pytz.timezone('America/Sao_Paulo')).strftime("%d/%m/%Y %H:%M")
 
+def gerar_excel():
+    if not st.session_state['resultados']: return None
+    df = pd.DataFrame(st.session_state['resultados'])
+    out = BytesIO()
+    with pd.ExcelWriter(out, engine='xlsxwriter') as writer:
+        df.to_excel(writer, index=False)
+    return out.getvalue()
+
 # --- 4. BARRA LATERAL ---
 st.sidebar.header("1. Configuração")
 if os.path.exists("logo.png"): st.sidebar.image("logo.png", use_container_width=True)
@@ -60,6 +68,15 @@ if uploaded_file:
         else: auditor_valido = {'Nome': 'Geral', 'CPF': '000'}
     except: pass
 
+# --- NOVA ÁREA: DOWNLOAD RÁPIDO NA SIDEBAR ---
+if st.session_state['resultados']:
+    st.sidebar.markdown("---")
+    st.sidebar.write("💾 **Backup Rápido**")
+    excel_data = gerar_excel()
+    if excel_data:
+        nome_arq = f"Backup_{obter_hora().replace('/','-').replace(':','h')}.xlsx"
+        st.sidebar.download_button("📥 Baixar Excel Agora", excel_data, nome_arq, mime="application/vnd.ms-excel")
+
 st.sidebar.markdown("---")
 pagina = st.sidebar.radio("Menu:", ["📝 EXECUTAR DTO 01", "📊 Painel Gerencial"])
 
@@ -91,16 +108,18 @@ if pagina == "📝 EXECUTAR DTO 01":
         sel_pad = list(t_pad) if st.sidebar.checkbox("Todos Padrões", key="pe") else st.sidebar.multiselect("Padrões", t_pad)
 
         if sel_fil and sel_pad:
+            # Filtra Base (Escopo Atual)
             df_m = df_treinos[(df_treinos['Filial'].isin(sel_fil)) & (df_treinos['Codigo_Padrao'].isin(sel_pad))]
             
             if df_m.empty: st.warning("Sem dados.")
             else:
-                # Mapa de Nomes dos Padrões (NOVO)
-                # Cria um dicionário {Código: Nome}
+                # Mapa de Nomes e Metas
                 mapa_nomes = {}
+                meta_por_padrao = df_perguntas.groupby('Codigo_Padrao').size().to_dict()
+                
                 if 'Nome_Padrao' in df_perguntas.columns:
-                    temp_nomes = df_perguntas[['Codigo_Padrao', 'Nome_Padrao']].drop_duplicates()
-                    mapa_nomes = pd.Series(temp_nomes.Nome_Padrao.values, index=temp_nomes.Codigo_Padrao).to_dict()
+                    tn = df_perguntas[['Codigo_Padrao', 'Nome_Padrao']].drop_duplicates()
+                    mapa_nomes = pd.Series(tn.Nome_Padrao.values, index=tn.Codigo_Padrao).to_dict()
 
                 rank = df_m.groupby(['CPF','Nome_Funcionario','Filial']).size().reset_index(name='Qtd')
                 rank = rank.sort_values(by=['Qtd','Filial'], ascending=[False,True])
@@ -119,19 +138,32 @@ if pagina == "📝 EXECUTAR DTO 01":
                 for _, row in pg_rank.iterrows():
                     cpf, nome, fil = row['CPF'], row['Nome_Funcionario'], row['Filial']
                     qtd_pads = row['Qtd']
-                    salvos = sum(1 for r in st.session_state['resultados'] if str(r.get('CPF','')).strip()==cpf)
-                    icon = "🟢" if salvos>0 else "⚪"
+                    
+                    # --- LÓGICA DO SEMÁFORO (CORRIGIDA) ---
+                    # 1. Padrões que esse funcionario tem DENTRO DO FILTRO ATUAL
+                    pads_no_filtro = df_m[df_m['CPF']==cpf]['Codigo_Padrao'].unique()
+                    
+                    # 2. Meta de perguntas (Soma das perguntas desses padrões)
+                    meta_perguntas = sum(meta_por_padrao.get(p, 0) for p in pads_no_filtro)
+                    
+                    # 3. Quantas ele respondeu (Considerando apenas os padrões do filtro)
+                    respondidos = 0
+                    for r in st.session_state['resultados']:
+                        if str(r.get('CPF','')).strip() == cpf and str(r.get('Padrao','')).strip() in pads_no_filtro:
+                            respondidos += 1
+                    
+                    # 4. Define Ícone
+                    if respondidos == 0: icon = "⚪"
+                    elif respondidos >= meta_perguntas and meta_perguntas > 0: icon = "🟢"
+                    else: icon = "🟡" # Parcial
                     
                     with st.expander(f"{icon} {nome} | {fil} ({qtd_pads} Padrões)"):
                         pads = df_m[df_m['CPF']==cpf]['Codigo_Padrao'].unique()
                         with st.form(key=f"f_{cpf}"):
                             resps, obss = {}, {}
                             for p in pads:
-                                # TÍTULO DO PADRÃO COM NOME (ATUALIZADO)
                                 nome_p = mapa_nomes.get(p, "")
-                                titulo_display = f"**{p} - {nome_p}**" if nome_p else f"**{p}**"
-                                st.markdown(titulo_display)
-                                
+                                st.markdown(f"**{p} - {nome_p}**" if nome_p else f"**{p}**")
                                 pergs = df_perguntas[df_perguntas['Codigo_Padrao']==p]
                                 for idx, pr in pergs.iterrows():
                                     pt = pr['Pergunta']
@@ -164,15 +196,16 @@ elif pagina == "📊 Painel Gerencial":
     st.title("📊 Painel Gerencial")
     if not dados_ok: st.info("👈 Carregue a Base.")
     else:
-        with st.expander("🔍 Raio-X da Base de Dados (Verificar Erros)", expanded=True):
-            check_colisao = df_treinos.groupby('CPF')['Nome_Funcionario'].nunique()
-            colisoes = check_colisao[check_colisao > 1]
-            if not colisoes.empty:
-                st.error(f"🚨 ERRO CRÍTICO: {len(colisoes)} CPFs duplicados!")
-                for cpf_errado in colisoes.index:
-                    nomes = df_treinos[df_treinos['CPF'] == cpf_errado]['Nome_Funcionario'].unique()
-                    st.warning(f"CPF {cpf_errado}: {', '.join(nomes)}")
-            else: st.success("✅ Base de Dados íntegra.")
+        # Raio-X
+        with st.expander("🔍 Raio-X (Erros de Cadastro)", expanded=False):
+            colisao = df_treinos.groupby('CPF')['Nome_Funcionario'].nunique()
+            errados = colisao[colisao > 1]
+            if not errados.empty:
+                st.error(f"CPFs Duplicados: {len(errados)}")
+                for cpf_e in errados.index:
+                    ns = df_treinos[df_treinos['CPF']==cpf_e]['Nome_Funcionario'].unique()
+                    st.write(f"{cpf_e}: {', '.join(ns)}")
+            else: st.success("Base OK.")
 
         st.sidebar.header("Filtros Dashboard")
         t_fil_d = df_treinos['Filial'].unique()
@@ -183,35 +216,38 @@ elif pagina == "📊 Painel Gerencial":
         
         st.markdown("---")
         
-        df_escopo = df_treinos[(df_treinos['Filial'].isin(f_sel)) & (df_treinos['Codigo_Padrao'].isin(p_sel))]
-        total = df_escopo['CPF'].nunique()
+        # KPIs
+        df_esc = df_treinos[(df_treinos['Filial'].isin(f_sel)) & (df_treinos['Codigo_Padrao'].isin(p_sel))]
+        total = df_esc['CPF'].nunique()
         concluidos = 0
         
         df_res = pd.DataFrame(st.session_state['resultados'])
-        df_r_filt = pd.DataFrame()
+        df_rf = pd.DataFrame()
+        
         if not df_res.empty:
             if 'Filial' in df_res.columns and 'Padrao' in df_res.columns:
-                df_r_filt = df_res[(df_res['Filial'].isin(f_sel)) & (df_res['Padrao'].isin(p_sel))]
+                df_rf = df_res[(df_res['Filial'].isin(f_sel)) & (df_res['Padrao'].isin(p_sel))]
         
-        if not df_r_filt.empty and 'CPF' in df_r_filt.columns:
-            resps = df_r_filt.groupby('CPF').size().to_dict()
+        if not df_rf.empty and 'CPF' in df_rf.columns:
+            resps = df_rf.groupby('CPF').size().to_dict()
             metas = df_perguntas.groupby('Codigo_Padrao').size().to_dict()
-            for cpf in df_escopo['CPF'].unique():
-                pads = df_escopo[df_escopo['CPF']==cpf]['Codigo_Padrao'].unique()
+            for cpf in df_esc['CPF'].unique():
+                pads = df_esc[df_esc['CPF']==cpf]['Codigo_Padrao'].unique()
                 meta = sum(metas.get(p,0) for p in pads)
                 if resps.get(cpf,0) >= meta and meta>0: concluidos+=1
         
         c1,c2 = st.columns(2)
-        c1.metric("Total Pessoas (Meta)", total)
+        c1.metric("Total Pessoas", total)
         prog = concluidos/total if total else 0
         c2.metric("Concluídos", concluidos, f"{int(prog*100)}%")
         st.progress(prog)
         
+        # Botões de Ação na página também
         st.markdown("---")
         b1,b2 = st.columns([3,1])
         if not df_res.empty:
             out = BytesIO()
             with pd.ExcelWriter(out, engine='xlsxwriter') as writer: df_res.to_excel(writer, index=False)
-            b1.download_button("📥 Baixar Master", out.getvalue(), f"Master_{obter_hora().replace('/','-')}.xlsx")
+            b1.download_button("📥 Baixar Excel", out.getvalue(), f"Master_{obter_hora().replace('/','-')}.xlsx")
         
-        if b2.button("🗑️ Limpar"): st.session_state['resultados']=[]; st.rerun()
+        if b2.button("🗑️ Limpar Tudo"): st.session_state['resultados']=[]; st.rerun()
