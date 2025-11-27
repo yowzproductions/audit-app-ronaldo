@@ -152,9 +152,9 @@ if pagina == "📝 EXECUTAR DTO 01":
                     with st.expander(f"{icon} {nome} | {fil} ({qtd_pads} Padrões)"):
                         pads = df_m[df_m['CPF']==cpf]['Codigo_Padrao'].unique()
                         with st.form(key=f"f_{cpf}"):
-                            # --- BOTÃO SALVAR (TOPO) - NOME LIMPO ---
+                            # --- BOTÃO TOPO (COM KEY ÚNICA) ---
                             col_save_top, _ = st.columns([1, 4])
-                            submit_top = col_save_top.form_submit_button("💾 Salvar")
+                            submit_top = col_save_top.form_submit_button("💾 Salvar", key=f"save_top_{cpf}")
                             st.markdown("---")
 
                             resps, obss = {}, {}
@@ -173,8 +173,8 @@ if pagina == "📝 EXECUTAR DTO 01":
                                     obss[kw] = st.text_input("Obs", value=(prev['obs'] if prev else ""), key=f"obs_{kw}")
                                     st.markdown("---")
                             
-                            # --- BOTÃO SALVAR (FIM) - NOME LIMPO ---
-                            submit_bottom = st.form_submit_button("💾 Salvar")
+                            # --- BOTÃO FIM (COM KEY ÚNICA) ---
+                            submit_bottom = st.form_submit_button("💾 Salvar", key=f"save_bottom_{cpf}")
                             
                             if submit_top or submit_bottom:
                                 dh = obter_hora()
@@ -221,7 +221,6 @@ elif pagina == "📊 Painel Gerencial":
         
         df_res = pd.DataFrame(st.session_state['resultados'])
         df_rf = pd.DataFrame()
-        
         if not df_res.empty:
             if 'Filial' in df_res.columns and 'Padrao' in df_res.columns:
                 df_rf = df_res[(df_res['Filial'].isin(f_sel)) & (df_res['Padrao'].isin(p_sel))]
@@ -245,6 +244,6 @@ elif pagina == "📊 Painel Gerencial":
         if not df_res.empty:
             out = BytesIO()
             with pd.ExcelWriter(out, engine='xlsxwriter') as writer: df_res.to_excel(writer, index=False)
-            b1.download_button("📥 Baixar Planilha Geral", out.getvalue(), f"Master_{obter_hora().replace('/','-')}.xlsx")
+            b1.download_button("📥 Baixar Excel", out.getvalue(), f"Master_{obter_hora().replace('/','-')}.xlsx")
         
         if b2.button("🗑️ Limpar Tudo"): st.session_state['resultados']=[]; st.rerun()
