@@ -68,7 +68,7 @@ if uploaded_file:
         else: auditor_valido = {'Nome': 'Geral', 'CPF': '000'}
     except: pass
 
-# --- NOVA ÁREA: DOWNLOAD RÁPIDO NA SIDEBAR ---
+# Backup Rápido Sidebar
 if st.session_state['resultados']:
     st.sidebar.markdown("---")
     st.sidebar.write("💾 **Backup Rápido**")
@@ -108,18 +108,17 @@ if pagina == "📝 EXECUTAR DTO 01":
         sel_pad = list(t_pad) if st.sidebar.checkbox("Todos Padrões", key="pe") else st.sidebar.multiselect("Padrões", t_pad)
 
         if sel_fil and sel_pad:
-            # Filtra Base (Escopo Atual)
             df_m = df_treinos[(df_treinos['Filial'].isin(sel_fil)) & (df_treinos['Codigo_Padrao'].isin(sel_pad))]
             
             if df_m.empty: st.warning("Sem dados.")
             else:
-                # Mapa de Nomes e Metas
+                # Mapas
                 mapa_nomes = {}
-                meta_por_padrao = df_perguntas.groupby('Codigo_Padrao').size().to_dict()
-                
                 if 'Nome_Padrao' in df_perguntas.columns:
                     tn = df_perguntas[['Codigo_Padrao', 'Nome_Padrao']].drop_duplicates()
                     mapa_nomes = pd.Series(tn.Nome_Padrao.values, index=tn.Codigo_Padrao).to_dict()
+                
+                meta_por_padrao = df_perguntas.groupby('Codigo_Padrao').size().to_dict()
 
                 rank = df_m.groupby(['CPF','Nome_Funcionario','Filial']).size().reset_index(name='Qtd')
                 rank = rank.sort_values(by=['Qtd','Filial'], ascending=[False,True])
@@ -139,27 +138,26 @@ if pagina == "📝 EXECUTAR DTO 01":
                     cpf, nome, fil = row['CPF'], row['Nome_Funcionario'], row['Filial']
                     qtd_pads = row['Qtd']
                     
-                    # --- LÓGICA DO SEMÁFORO (CORRIGIDA) ---
-                    # 1. Padrões que esse funcionario tem DENTRO DO FILTRO ATUAL
+                    # Semáforo
                     pads_no_filtro = df_m[df_m['CPF']==cpf]['Codigo_Padrao'].unique()
-                    
-                    # 2. Meta de perguntas (Soma das perguntas desses padrões)
                     meta_perguntas = sum(meta_por_padrao.get(p, 0) for p in pads_no_filtro)
-                    
-                    # 3. Quantas ele respondeu (Considerando apenas os padrões do filtro)
                     respondidos = 0
                     for r in st.session_state['resultados']:
                         if str(r.get('CPF','')).strip() == cpf and str(r.get('Padrao','')).strip() in pads_no_filtro:
                             respondidos += 1
                     
-                    # 4. Define Ícone
                     if respondidos == 0: icon = "⚪"
                     elif respondidos >= meta_perguntas and meta_perguntas > 0: icon = "🟢"
-                    else: icon = "🟡" # Parcial
+                    else: icon = "🟡"
                     
                     with st.expander(f"{icon} {nome} | {fil} ({qtd_pads} Padrões)"):
                         pads = df_m[df_m['CPF']==cpf]['Codigo_Padrao'].unique()
                         with st.form(key=f"f_{cpf}"):
+                            # BOTÃO DE SALVAR NO TOPO
+                            col_save_top, _ = st.columns([1, 4])
+                            submit_top = col_save_top.form_submit_button("💾 Salvar Parcial (Topo)")
+                            st.markdown("---")
+
                             resps, obss = {}, {}
                             for p in pads:
                                 nome_p = mapa_nomes.get(p, "")
@@ -176,7 +174,11 @@ if pagina == "📝 EXECUTAR DTO 01":
                                     obss[kw] = st.text_input("Obs", value=(prev['obs'] if prev else ""), key=f"obs_{kw}")
                                     st.markdown("---")
                             
-                            if st.form_submit_button("💾 Salvar"):
+                            # BOTÃO DE SALVAR NO FINAL
+                            submit_bottom = st.form_submit_button("💾 Salvar Final")
+                            
+                            # Lógica Unificada de Salvamento
+                            if submit_top or submit_bottom:
                                 dh = obter_hora()
                                 cnt = 0
                                 for k, v in resps.items():
@@ -196,7 +198,6 @@ elif pagina == "📊 Painel Gerencial":
     st.title("📊 Painel Gerencial")
     if not dados_ok: st.info("👈 Carregue a Base.")
     else:
-        # Raio-X
         with st.expander("🔍 Raio-X (Erros de Cadastro)", expanded=False):
             colisao = df_treinos.groupby('CPF')['Nome_Funcionario'].nunique()
             errados = colisao[colisao > 1]
@@ -216,14 +217,12 @@ elif pagina == "📊 Painel Gerencial":
         
         st.markdown("---")
         
-        # KPIs
         df_esc = df_treinos[(df_treinos['Filial'].isin(f_sel)) & (df_treinos['Codigo_Padrao'].isin(p_sel))]
         total = df_esc['CPF'].nunique()
         concluidos = 0
         
         df_res = pd.DataFrame(st.session_state['resultados'])
         df_rf = pd.DataFrame()
-        
         if not df_res.empty:
             if 'Filial' in df_res.columns and 'Padrao' in df_res.columns:
                 df_rf = df_res[(df_res['Filial'].isin(f_sel)) & (df_res['Padrao'].isin(p_sel))]
@@ -237,12 +236,11 @@ elif pagina == "📊 Painel Gerencial":
                 if resps.get(cpf,0) >= meta and meta>0: concluidos+=1
         
         c1,c2 = st.columns(2)
-        c1.metric("Total Pessoas", total)
+        c1.metric("Total Pessoas (Meta)", total)
         prog = concluidos/total if total else 0
         c2.metric("Concluídos", concluidos, f"{int(prog*100)}%")
         st.progress(prog)
         
-        # Botões de Ação na página também
         st.markdown("---")
         b1,b2 = st.columns([3,1])
         if not df_res.empty:
