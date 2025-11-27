@@ -198,7 +198,7 @@ elif pagina == "📊 Painel Gerencial":
     st.title("📊 Painel Gerencial")
     if not dados_ok: st.info("👈 Carregue a Base.")
     else:
-        with st.expander("🔍 Raio-X (Erros)", expanded=False):
+        with st.expander("🔍 Raio-X (Erros de Cadastro)", expanded=False):
             colisao = df_treinos.groupby('CPF')['Nome_Funcionario'].nunique()
             errados = colisao[colisao > 1]
             if not errados.empty:
@@ -217,10 +217,11 @@ elif pagina == "📊 Painel Gerencial":
         
         st.markdown("---")
         
-        # --- CÁLCULO GERAL DE STATUS ---
+        # --- CÁLCULOS GERAIS ---
         df_esc = df_treinos[(df_treinos['Filial'].isin(f_sel)) & (df_treinos['Codigo_Padrao'].isin(p_sel))]
+        total = df_esc['CPF'].nunique()
+        concluidos = 0
         
-        # Prepara dados
         df_res = pd.DataFrame(st.session_state['resultados'])
         df_rf = pd.DataFrame()
         if not df_res.empty:
@@ -233,56 +234,37 @@ elif pagina == "📊 Painel Gerencial":
         
         metas = df_perguntas.groupby('Codigo_Padrao').size().to_dict()
         
-        # Classificação dos Funcionários
-        lista_status = []
-        
-        # Pega lista única de CPFs no escopo filtrado
-        cpfs_no_escopo = df_esc['CPF'].unique()
-        
+        # --- LÓGICA DE STATUS PESSOA ---
         counts = {'Pendente': 0, 'Parcial': 0, 'Concluido': 0}
+        lista_status_pessoas = []
         
-        for cpf in cpfs_no_escopo:
-            # Dados do funcionário
-            info = df_esc[df_esc['CPF'] == cpf].iloc[0]
-            nome = info['Nome_Funcionario']
-            filial = info['Filial']
-            
-            # Cálculo Meta
+        for cpf in df_esc['CPF'].unique():
             pads = df_esc[df_esc['CPF']==cpf]['Codigo_Padrao'].unique()
             meta = sum(metas.get(p,0) for p in pads)
-            
-            # Cálculo Realizado
             real = resps.get(cpf, 0)
             
-            # Define Status
-            if real == 0:
+            # Info Extra para a tabela
+            info = df_esc[df_esc['CPF'] == cpf].iloc[0]
+            
+            if real == 0: 
                 status = "🔴 Pendente"
                 counts['Pendente'] += 1
-            elif real >= meta and meta > 0:
+            elif real >= meta and meta > 0: 
                 status = "🟢 Concluído"
                 counts['Concluido'] += 1
-            else:
+                concluidos += 1
+            else: 
                 status = "🟡 Parcial"
                 counts['Parcial'] += 1
             
-            # Percentual
             pct = int((real/meta)*100) if meta > 0 else 0
-            
-            lista_status.append({
-                "Filial": filial,
-                "CPF": cpf,
-                "Nome": nome,
-                "Status": status,
-                "Progresso": f"{real}/{meta} ({pct}%)",
-                "Meta": meta,
-                "Realizado": real
+            lista_status_pessoas.append({
+                "Filial": info['Filial'], "CPF": cpf, "Nome": info['Nome_Funcionario'],
+                "Status": status, "Progresso": f"{real}/{meta} ({pct}%)"
             })
-            
-        df_detalhado = pd.DataFrame(lista_status)
-        
-        # --- EXIBIÇÃO ---
-        total = len(cpfs_no_escopo)
-        c1, c2, c3, c4 = st.columns(4)
+
+        # --- EXIBIÇÃO KPIs ---
+        c1,c2,c3,c4 = st.columns(4)
         c1.metric("Total Pessoas", total)
         c2.metric("Concluídos", counts['Concluido'])
         c3.metric("Parcial", counts['Parcial'])
@@ -292,35 +274,59 @@ elif pagina == "📊 Painel Gerencial":
         st.progress(prog, f"Taxa de Conclusão Total: {int(prog*100)}%")
         
         st.markdown("---")
-        st.subheader("🕵️ Detalhe por Funcionário (Quem falta?)")
         
-        tab1, tab2, tab3 = st.tabs(["🔴 Pendentes", "🟡 Em Andamento", "🟢 Concluídos"])
+        # --- SELETOR DE VISÃO (PESSOA vs PADRÃO) ---
+        visao = st.radio("Modo de Visualização:", ["👥 Por Pessoa", "📏 Por Padrão"], horizontal=True)
         
-        if not df_detalhado.empty:
-            with tab1:
-                st.dataframe(df_detalhado[df_detalhado['Status'].str.contains("Pendente")][['Filial','Nome','Progresso']], use_container_width=True, hide_index=True)
-            with tab2:
-                st.dataframe(df_detalhado[df_detalhado['Status'].str.contains("Parcial")][['Filial','Nome','Progresso']], use_container_width=True, hide_index=True)
-            with tab3:
-                st.dataframe(df_detalhado[df_detalhado['Status'].str.contains("Concluído")][['Filial','Nome','Progresso']], use_container_width=True, hide_index=True)
+        if visao == "👥 Por Pessoa":
+            tab1, tab2, tab3 = st.tabs(["🔴 Pendentes", "🟡 Em Andamento", "🟢 Concluídos"])
+            df_det = pd.DataFrame(lista_status_pessoas)
+            
+            if not df_det.empty:
+                with tab1: st.dataframe(df_det[df_det['Status'].str.contains("Pendente")], use_container_width=True, hide_index=True)
+                with tab2: st.dataframe(df_det[df_det['Status'].str.contains("Parcial")], use_container_width=True, hide_index=True)
+                with tab3: st.dataframe(df_det[df_det['Status'].str.contains("Concluído")], use_container_width=True, hide_index=True)
+            else: st.info("Sem dados no filtro.")
+            
+            # Download Status Pessoas
+            if not df_det.empty:
+                st.download_button("📥 Baixar Relatório de Status (Pessoas)", gerar_excel(df_det), f"Status_Pessoas_{obter_hora().replace('/','-')}.xlsx")
+
         else:
-            st.info("Nenhum funcionário no filtro selecionado.")
+            # --- VISÃO POR PADRÃO ---
+            st.subheader("📊 Volumetria por Padrão")
+            
+            volumetria = []
+            mapa_nomes = {}
+            if 'Nome_Padrao' in df_perguntas.columns:
+                tn = df_perguntas[['Codigo_Padrao', 'Nome_Padrao']].drop_duplicates()
+                mapa_nomes = pd.Series(tn.Nome_Padrao.values, index=tn.Codigo_Padrao).to_dict()
+
+            for padrao in p_sel:
+                # Meta de Pessoas para este padrão (no filtro de filial)
+                qtd_pessoas_meta = df_esc[df_esc['Codigo_Padrao'] == padrao]['CPF'].nunique()
+                
+                # Quantas pessoas já foram iniciadas neste padrão
+                qtd_iniciadas = 0
+                if not df_rf.empty and 'Padrao' in df_rf.columns:
+                    qtd_iniciadas = df_rf[df_rf['Padrao'] == padrao]['CPF'].nunique()
+                
+                nome_p = mapa_nomes.get(padrao, padrao)
+                pct_vol = int((qtd_iniciadas/qtd_pessoas_meta)*100) if qtd_pessoas_meta > 0 else 0
+                
+                volumetria.append({
+                    "Código": padrao,
+                    "Descrição": nome_p,
+                    "Meta (Pessoas)": qtd_pessoas_meta,
+                    "Realizado (Pessoas)": qtd_iniciadas,
+                    "% Cobertura": f"{pct_vol}%"
+                })
+            
+            df_vol = pd.DataFrame(volumetria)
+            st.dataframe(df_vol, use_container_width=True, hide_index=True)
+            
+            if not df_vol.empty:
+                st.download_button("📥 Baixar Relatório de Volumetria (Padrões)", gerar_excel(df_vol), f"Volumetria_Padroes_{obter_hora().replace('/','-')}.xlsx")
 
         st.markdown("---")
-        
-        # Downloads
-        col_d1, col_d2, col_trash = st.columns([2, 2, 1])
-        
-        # 1. Download Relatório de Status (NOVO)
-        if not df_detalhado.empty:
-            excel_status = gerar_excel(df_detalhado)
-            col_d1.download_button("📥 Baixar Status Geral (Quem fez o quê)", excel_status, f"Status_Geral_{obter_hora().replace('/','-')}.xlsx")
-        
-        # 2. Download Respostas Brutas (Original)
-        if not df_res.empty:
-            excel_raw = gerar_excel(df_res)
-            col_d2.download_button("📥 Baixar Respostas Detalhadas", excel_raw, f"Master_Respostas_{obter_hora().replace('/','-')}.xlsx")
-        
-        if col_trash.button("🗑️ Limpar", key="trash_dash"):
-            st.session_state['resultados'] = []
-            st.rerun()
+        if st.button("🗑️ Limpar Tudo", key="trash_dash"): st.session_state['resultados']=[]; st.rerun()
