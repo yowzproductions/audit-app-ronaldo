@@ -68,14 +68,14 @@ if uploaded_file:
         else: auditor_valido = {'Nome': 'Geral', 'CPF': '000'}
     except: pass
 
-# Backup Rápido Sidebar
+# --- ÁREA DE DOWNLOAD (Texto Simplificado) ---
 if st.session_state['resultados']:
     st.sidebar.markdown("---")
-    st.sidebar.write("💾 **Backup Rápido**")
+    st.sidebar.write("📂 **Exportar Dados**") # Título mais amigável
     excel_data = gerar_excel()
     if excel_data:
-        nome_arq = f"Backup_{obter_hora().replace('/','-').replace(':','h')}.xlsx"
-        st.sidebar.download_button("📥 Baixar Excel Agora", excel_data, nome_arq, mime="application/vnd.ms-excel")
+        nome_arq = f"Auditoria_{obter_hora().replace('/','-').replace(':','h')}.xlsx"
+        st.sidebar.download_button("📥 Baixar Planilha", excel_data, nome_arq, mime="application/vnd.ms-excel")
 
 st.sidebar.markdown("---")
 pagina = st.sidebar.radio("Menu:", ["📝 EXECUTAR DTO 01", "📊 Painel Gerencial"])
@@ -108,17 +108,17 @@ if pagina == "📝 EXECUTAR DTO 01":
         sel_pad = list(t_pad) if st.sidebar.checkbox("Todos Padrões", key="pe") else st.sidebar.multiselect("Padrões", t_pad)
 
         if sel_fil and sel_pad:
+            # Filtra Base
             df_m = df_treinos[(df_treinos['Filial'].isin(sel_fil)) & (df_treinos['Codigo_Padrao'].isin(sel_pad))]
             
             if df_m.empty: st.warning("Sem dados.")
             else:
-                # Mapas
                 mapa_nomes = {}
+                meta_por_padrao = df_perguntas.groupby('Codigo_Padrao').size().to_dict()
+                
                 if 'Nome_Padrao' in df_perguntas.columns:
                     tn = df_perguntas[['Codigo_Padrao', 'Nome_Padrao']].drop_duplicates()
                     mapa_nomes = pd.Series(tn.Nome_Padrao.values, index=tn.Codigo_Padrao).to_dict()
-                
-                meta_por_padrao = df_perguntas.groupby('Codigo_Padrao').size().to_dict()
 
                 rank = df_m.groupby(['CPF','Nome_Funcionario','Filial']).size().reset_index(name='Qtd')
                 rank = rank.sort_values(by=['Qtd','Filial'], ascending=[False,True])
@@ -138,7 +138,6 @@ if pagina == "📝 EXECUTAR DTO 01":
                     cpf, nome, fil = row['CPF'], row['Nome_Funcionario'], row['Filial']
                     qtd_pads = row['Qtd']
                     
-                    # Semáforo
                     pads_no_filtro = df_m[df_m['CPF']==cpf]['Codigo_Padrao'].unique()
                     meta_perguntas = sum(meta_por_padrao.get(p, 0) for p in pads_no_filtro)
                     respondidos = 0
@@ -153,9 +152,9 @@ if pagina == "📝 EXECUTAR DTO 01":
                     with st.expander(f"{icon} {nome} | {fil} ({qtd_pads} Padrões)"):
                         pads = df_m[df_m['CPF']==cpf]['Codigo_Padrao'].unique()
                         with st.form(key=f"f_{cpf}"):
-                            # BOTÃO DE SALVAR NO TOPO
+                            # --- BOTÃO SALVAR (TOPO) - NOME LIMPO ---
                             col_save_top, _ = st.columns([1, 4])
-                            submit_top = col_save_top.form_submit_button("💾 Salvar Parcial (Topo)")
+                            submit_top = col_save_top.form_submit_button("💾 Salvar")
                             st.markdown("---")
 
                             resps, obss = {}, {}
@@ -174,10 +173,9 @@ if pagina == "📝 EXECUTAR DTO 01":
                                     obss[kw] = st.text_input("Obs", value=(prev['obs'] if prev else ""), key=f"obs_{kw}")
                                     st.markdown("---")
                             
-                            # BOTÃO DE SALVAR NO FINAL
-                            submit_bottom = st.form_submit_button("💾 Salvar Final")
+                            # --- BOTÃO SALVAR (FIM) - NOME LIMPO ---
+                            submit_bottom = st.form_submit_button("💾 Salvar")
                             
-                            # Lógica Unificada de Salvamento
                             if submit_top or submit_bottom:
                                 dh = obter_hora()
                                 cnt = 0
@@ -223,6 +221,7 @@ elif pagina == "📊 Painel Gerencial":
         
         df_res = pd.DataFrame(st.session_state['resultados'])
         df_rf = pd.DataFrame()
+        
         if not df_res.empty:
             if 'Filial' in df_res.columns and 'Padrao' in df_res.columns:
                 df_rf = df_res[(df_res['Filial'].isin(f_sel)) & (df_res['Padrao'].isin(p_sel))]
@@ -236,7 +235,7 @@ elif pagina == "📊 Painel Gerencial":
                 if resps.get(cpf,0) >= meta and meta>0: concluidos+=1
         
         c1,c2 = st.columns(2)
-        c1.metric("Total Pessoas (Meta)", total)
+        c1.metric("Total Pessoas", total)
         prog = concluidos/total if total else 0
         c2.metric("Concluídos", concluidos, f"{int(prog*100)}%")
         st.progress(prog)
@@ -246,6 +245,6 @@ elif pagina == "📊 Painel Gerencial":
         if not df_res.empty:
             out = BytesIO()
             with pd.ExcelWriter(out, engine='xlsxwriter') as writer: df_res.to_excel(writer, index=False)
-            b1.download_button("📥 Baixar Excel", out.getvalue(), f"Master_{obter_hora().replace('/','-')}.xlsx")
+            b1.download_button("📥 Baixar Planilha Geral", out.getvalue(), f"Master_{obter_hora().replace('/','-')}.xlsx")
         
         if b2.button("🗑️ Limpar Tudo"): st.session_state['resultados']=[]; st.rerun()
