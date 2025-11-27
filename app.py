@@ -106,15 +106,23 @@ if pagina == "📝 EXECUTAR DTO 01":
         sel_pad = list(t_pad) if st.sidebar.checkbox("Todos Padrões", key="pe") else st.sidebar.multiselect("Padrões", t_pad)
 
         if sel_fil and sel_pad:
+            # Filtra Base
             df_m = df_treinos[(df_treinos['Filial'].isin(sel_fil)) & (df_treinos['Codigo_Padrao'].isin(sel_pad))]
             
             if df_m.empty: st.warning("Sem dados.")
             else:
+                # Mapa de Nomes
                 mapa_nomes = {}
-                meta_por_padrao = df_perguntas.groupby('Codigo_Padrao').size().to_dict()
                 if 'Nome_Padrao' in df_perguntas.columns:
                     tn = df_perguntas[['Codigo_Padrao', 'Nome_Padrao']].drop_duplicates()
-                    mapa_nomes = pd.Series(tn.Nome_Padrao.values, index=tn.Codigo_Padrao).to_dict()
+                    # Garante chaves como string
+                    mapa_nomes = pd.Series(tn.Nome_Padrao.values, index=tn.Codigo_Padrao.astype(str).str.strip()).to_dict()
+
+                # Mapa de Metas (Quantas perguntas tem cada padrão?)
+                # Garante que o índice é string para bater com a busca depois
+                meta_por_padrao = df_perguntas.groupby('Codigo_Padrao').size()
+                meta_por_padrao.index = meta_por_padrao.index.astype(str).str.strip()
+                dict_metas = meta_por_padrao.to_dict()
 
                 rank = df_m.groupby(['CPF','Nome_Funcionario','Filial']).size().reset_index(name='Qtd')
                 rank = rank.sort_values(by=['Qtd','Filial'], ascending=[False,True])
@@ -128,57 +136,91 @@ if pagina == "📝 EXECUTAR DTO 01":
                 c2.markdown(f"<div style='text-align:center'>Pág {st.session_state['pagina_atual']+1}/{tot_p}</div>", unsafe_allow_html=True)
                 
                 pg_rank = rank.iloc[st.session_state['pagina_atual']*10 : (st.session_state['pagina_atual']+1)*10]
-                mem = {f"{str(r.get('CPF','')).strip()}_{str(r.get('Padrao','')).strip()}_{str(r.get('Pergunta','')).strip()}": {'res':r.get('Resultado'),'obs':r.get('Observacao')} for r in st.session_state['resultados']}
+                
+                # Memória Otimizada
+                memoria = {}
+                for r in st.session_state['resultados']:
+                    k = f"{str(r.get('CPF','')).strip()}_{str(r.get('Padrao','')).strip()}_{str(r.get('Pergunta','')).strip()}"
+                    memoria[k] = {'res': r.get('Resultado'), 'obs': r.get('Observacao')}
                 
                 for _, row in pg_rank.iterrows():
-                    cpf, nome, fil = row['CPF'], row['Nome_Funcionario'], row['Filial']
+                    cpf_func = str(row['CPF']).strip()
+                    nome = row['Nome_Funcionario']
+                    filial = row['Filial']
                     qtd_pads = row['Qtd']
                     
-                    pads_no_filtro = df_m[df_m['CPF']==cpf]['Codigo_Padrao'].unique()
-                    meta_perguntas = sum(meta_por_padrao.get(p, 0) for p in pads_no_filtro)
+                    # --- CÁLCULO DE STATUS CORRIGIDO ---
+                    # 1. Quais padrões esse funcionário tem (no filtro atual)?
+                    pads_no_filtro = df_m[df_m['CPF'].astype(str).str.strip() == cpf_func]['Codigo_Padrao'].unique()
+                    pads_no_filtro = [str(p).strip() for p in pads_no_filtro]
+                    
+                    # 2. Qual a meta total de perguntas para esses padrões?
+                    meta_total = sum(dict_metas.get(p, 0) for p in pads_no_filtro)
+                    
+                    # 3. Quantas respostas JÁ EXISTEM na memória para esse CPF nesses padrões?
                     respondidos = 0
                     for r in st.session_state['resultados']:
-                        if str(r.get('CPF','')).strip() == cpf and str(r.get('Padrao','')).strip() in pads_no_filtro:
+                        r_cpf = str(r.get('CPF','')).strip()
+                        r_pad = str(r.get('Padrao','')).strip()
+                        if r_cpf == cpf_func and r_pad in pads_no_filtro:
                             respondidos += 1
                     
+                    # 4. Define Ícone
                     if respondidos == 0: icon = "⚪"
-                    elif respondidos >= meta_perguntas and meta_perguntas > 0: icon = "🟢"
+                    elif respondidos >= meta_total and meta_total > 0: icon = "🟢"
                     else: icon = "🟡"
                     
-                    with st.expander(f"{icon} {nome} | {fil} ({qtd_pads} Padrões)"):
-                        pads = df_m[df_m['CPF']==cpf]['Codigo_Padrao'].unique()
-                        with st.form(key=f"f_{cpf}"):
+                    with st.expander(f"{icon} {nome} | {filial} ({qtd_pads} Padrões)"):
+                        pads_originais = df_m[df_m['CPF'].astype(str).str.strip() == cpf_func]['Codigo_Padrao'].unique()
+                        
+                        with st.form(key=f"f_{cpf_func}"):
+                            # Botão Topo
                             col_save_top, _ = st.columns([1, 4])
-                            submit_top = col_save_top.form_submit_button("💾 Salvar", key=f"stop_{cpf}")
+                            submit_top = col_save_top.form_submit_button("💾 Salvar", key=f"stop_{cpf_func}")
                             st.markdown("---")
+
                             resps, obss = {}, {}
-                            for p in pads:
-                                nome_p = mapa_nomes.get(p, "")
-                                st.markdown(f"**{p} - {nome_p}**" if nome_p else f"**{p}**")
-                                pergs = df_perguntas[df_perguntas['Codigo_Padrao']==p]
+                            for p_cod in pads_originais:
+                                p_str = str(p_cod).strip()
+                                nome_p = mapa_nomes.get(p_str, "")
+                                st.markdown(f"**{p_str} - {nome_p}**" if nome_p else f"**{p_str}**")
+                                
+                                pergs = df_perguntas[df_perguntas['Codigo_Padrao'].astype(str).str.strip() == p_str]
+                                
                                 for idx, pr in pergs.iterrows():
                                     pt = pr['Pergunta']
-                                    kb = f"{cpf}_{p}_{pt}"
-                                    kw = f"{cpf}_{p}_{idx}"
-                                    prev = mem.get(kb)
-                                    idx_r = ["Conforme","Não Conforme","Não se Aplica"].index(prev['res']) if prev and prev['res'] in ["Conforme","Não Conforme","Não se Aplica"] else None
+                                    kb = f"{cpf_func}_{p_str}_{pt}"
+                                    kw = f"{cpf_func}_{p_str}_{idx}"
+                                    
+                                    prev = memoria.get(kb)
+                                    idx_r = None
+                                    obs_v = ""
+                                    if prev:
+                                        opts = ["Conforme", "Não Conforme", "Não se Aplica"]
+                                        if prev['res'] in opts: idx_r = opts.index(prev['res'])
+                                        obs_v = prev['obs'] if prev['obs'] else ""
+                                    
                                     st.write(pt)
-                                    resps[kw] = st.radio("R", ["Conforme","Não Conforme","Não se Aplica"], key=kw, horizontal=True, index=idx_r, label_visibility="collapsed")
-                                    obss[kw] = st.text_input("Obs", value=(prev['obs'] if prev else ""), key=f"obs_{kw}")
+                                    resps[kw] = st.radio("R", ["Conforme", "Não Conforme", "Não se Aplica"], key=kw, horizontal=True, index=idx_r, label_visibility="collapsed")
+                                    obss[kw] = st.text_input("Obs", value=obs_v, key=f"obs_{kw}")
                                     st.markdown("---")
                             
-                            submit_bottom = st.form_submit_button("💾 Salvar", key=f"sbot_{cpf}")
+                            # Botão Fim
+                            submit_bottom = st.form_submit_button("💾 Salvar", key=f"sbot_{cpf_func}")
                             
                             if submit_top or submit_bottom:
                                 dh = obter_hora()
                                 cnt = 0
                                 for k, v in resps.items():
                                     if v:
-                                        _, pr, ir = k.split('_', 2)
+                                        _, pr_k, ir = k.split('_', 2)
                                         try: pt_txt = df_perguntas.loc[int(ir), 'Pergunta']
                                         except: pt_txt = "Erro"
-                                        st.session_state['resultados'] = [r for r in st.session_state['resultados'] if not (str(r.get('CPF','')).strip()==cpf and str(r.get('Padrao','')).strip()==pr and str(r.get('Pergunta','')).strip()==pt_txt)]
-                                        reg = {"Data":dh, "Filial":fil, "Funcionario":nome, "CPF":cpf, "Padrao":pr, "Pergunta":pt_txt, "Resultado":v, "Observacao":obss.get(k,"")}
+                                        
+                                        # Upsert Seguro
+                                        st.session_state['resultados'] = [r for r in st.session_state['resultados'] if not (str(r.get('CPF','')).strip()==cpf_func and str(r.get('Padrao','')).strip()==pr_k and str(r.get('Pergunta','')).strip()==pt_txt)]
+                                        
+                                        reg = {"Data":dh, "Filial":filial, "Funcionario":nome, "CPF":cpf_func, "Padrao":pr_k, "Pergunta":pt_txt, "Resultado":v, "Observacao":obss.get(k,"")}
                                         if auditor_valido: reg.update({"Auditor_Nome":auditor_valido['Nome'], "Auditor_CPF":auditor_valido['CPF']})
                                         st.session_state['resultados'].append(reg)
                                         cnt+=1
@@ -203,9 +245,6 @@ elif pagina == "📊 Painel Gerencial":
             errados = colisao[colisao > 1]
             if not errados.empty:
                 st.error(f"CPFs Duplicados: {len(errados)}")
-                for cpf_e in errados.index:
-                    ns = df_treinos[df_treinos['CPF']==cpf_e]['Nome_Funcionario'].unique()
-                    st.write(f"{cpf_e}: {', '.join(ns)}")
             else: st.success("Base OK.")
 
         st.sidebar.header("Filtros Dashboard")
@@ -217,7 +256,7 @@ elif pagina == "📊 Painel Gerencial":
         
         st.markdown("---")
         
-        # --- CÁLCULOS COMUNS ---
+        # --- CÁLCULOS GERAIS ---
         df_esc = df_treinos[(df_treinos['Filial'].isin(f_sel)) & (df_treinos['Codigo_Padrao'].isin(p_sel))]
         
         df_res = pd.DataFrame(st.session_state['resultados'])
@@ -226,7 +265,19 @@ elif pagina == "📊 Painel Gerencial":
             if 'Filial' in df_res.columns and 'Padrao' in df_res.columns:
                 df_rf = df_res[(df_res['Filial'].isin(f_sel)) & (df_res['Padrao'].isin(p_sel))]
         
-        metas = df_perguntas.groupby('Codigo_Padrao').size().to_dict()
+        # Metas (Dicionário Seguro)
+        # Garante que as chaves de meta sejam string limpa
+        aux_meta = df_perguntas.groupby('Codigo_Padrao').size()
+        aux_meta.index = aux_meta.index.astype(str).str.strip()
+        metas = aux_meta.to_dict()
+        
+        # Respostas (Dicionário Seguro)
+        resps = {}
+        if not df_rf.empty and 'CPF' in df_rf.columns:
+            # Importante: Agrupar garantindo tipagem
+            temp = df_rf.copy()
+            temp['CPF'] = temp['CPF'].astype(str).str.strip()
+            resps = temp.groupby('CPF').size().to_dict()
         
         # --- SELETOR DE VISÃO ---
         st.write("Modo de Visualização:")
@@ -238,22 +289,29 @@ elif pagina == "📊 Painel Gerencial":
             counts = {'Pendente': 0, 'Parcial': 0, 'Concluido': 0}
             lista_detalhe = []
             
-            resps = df_rf.groupby('CPF').size().to_dict() if (not df_rf.empty and 'CPF' in df_rf.columns) else {}
+            cpfs_unicos = df_esc['CPF'].astype(str).str.strip().unique()
             
-            cpfs_unicos = df_esc['CPF'].unique()
             for cpf in cpfs_unicos:
-                pads = df_esc[df_esc['CPF']==cpf]['Codigo_Padrao'].unique()
-                meta = sum(metas.get(p,0) for p in pads)
+                # Filtra escopo deste CPF
+                escopo_cpf = df_esc[df_esc['CPF'].astype(str).str.strip() == cpf]
+                pads_pessoa = escopo_cpf['Codigo_Padrao'].astype(str).str.strip().unique()
+                
+                meta = sum(metas.get(p,0) for p in pads_pessoa)
                 real = resps.get(cpf, 0)
                 
-                status = "🔴 Pendente"
-                if real == 0: counts['Pendente'] += 1
-                elif real >= meta and meta > 0: 
-                    counts['Concluido'] += 1; status = "🟢 Concluído"
-                else: 
-                    counts['Parcial'] += 1; status = "🟡 Parcial"
+                # Info para tabela
+                info = escopo_cpf.iloc[0]
                 
-                info = df_esc[df_esc['CPF']==cpf].iloc[0]
+                if real == 0: 
+                    status = "🔴 Pendente"
+                    counts['Pendente'] += 1
+                elif real >= meta and meta > 0: 
+                    status = "🟢 Concluído"
+                    counts['Concluido'] += 1
+                else: 
+                    status = "🟡 Parcial"
+                    counts['Parcial'] += 1
+                
                 pct = int((real/meta)*100) if meta > 0 else 0
                 lista_detalhe.append({
                     "Filial": info['Filial'], "CPF": cpf, "Nome": info['Nome_Funcionario'], 
@@ -278,24 +336,29 @@ elif pagina == "📊 Painel Gerencial":
 
         else:
             # --- CÁLCULO POR PADRÃO (VOLUMETRIA) ---
-            # Total Volume = Soma de todas as atribuições (linhas do df_esc)
             total_vol = len(df_esc) 
             counts_vol = {'Zero': 0, 'Iniciado': 0, 'Completo': 0}
             volumetria = []
             
+            # Mapa Nomes Padrão
             mapa_nomes = {}
             if 'Nome_Padrao' in df_perguntas.columns:
                 tn = df_perguntas[['Codigo_Padrao', 'Nome_Padrao']].drop_duplicates()
-                mapa_nomes = pd.Series(tn.Nome_Padrao.values, index=tn.Codigo_Padrao).to_dict()
+                mapa_nomes = pd.Series(tn.Nome_Padrao.values, index=tn.Codigo_Padrao.astype(str).str.strip()).to_dict()
             
-            # Prepara respostas detalhadas por (CPF, Padrão)
+            # Prepara respostas detalhadas (CPF, Padrão) -> Qtd
             resps_det = {}
-            if not df_rf.empty and 'Padrao' in df_rf.columns:
-                resps_det = df_rf.groupby(['CPF', 'Padrao']).size().to_dict()
+            if not df_rf.empty:
+                temp_rf = df_rf.copy()
+                temp_rf['CPF'] = temp_rf['CPF'].astype(str).str.strip()
+                temp_rf['Padrao'] = temp_rf['Padrao'].astype(str).str.strip()
+                resps_det = temp_rf.groupby(['CPF', 'Padrao']).size().to_dict()
 
             # Itera sobre cada atribuição (Linha do escopo)
             for _, row in df_esc.iterrows():
-                c, p = row['CPF'], row['Codigo_Padrao']
+                c = str(row['CPF']).strip()
+                p = str(row['Codigo_Padrao']).strip()
+                
                 meta = metas.get(p, 0)
                 real = resps_det.get((c, p), 0)
                 
@@ -304,21 +367,20 @@ elif pagina == "📊 Painel Gerencial":
                 else: counts_vol['Iniciado'] += 1
 
             # Tabela Agrupada
-            padroes_unicos = df_esc['Codigo_Padrao'].unique()
+            padroes_unicos = df_esc['Codigo_Padrao'].astype(str).str.strip().unique()
             for p in padroes_unicos:
-                # Meta para ESTE padrão (Volume)
-                qtd_meta = len(df_esc[df_esc['Codigo_Padrao'] == p])
+                # Filtra escopo para este padrão
+                linhas_p = df_esc[df_esc['Codigo_Padrao'].astype(str).str.strip() == p]
+                qtd_meta = len(linhas_p)
                 
-                # Realizado para ESTE padrão (Iterando de novo ou otimizando)
-                # Otimização: Filtrar resultados para este padrão
+                # Conta concluidos neste padrão
                 concluidos_este = 0
-                if not df_rf.empty:
-                    # CPFs que terminaram este padrão
-                    rf_p = df_rf[df_rf['Padrao'] == p]
-                    if not rf_p.empty:
-                        resps_p = rf_p.groupby('CPF').size()
-                        meta_p = metas.get(p, 0)
-                        concluidos_este = sum(1 for c, r in resps_p.items() if r >= meta_p)
+                for _, r_esc in linhas_p.iterrows():
+                    c_check = str(r_esc['CPF']).strip()
+                    meta_check = metas.get(p, 0)
+                    real_check = resps_det.get((c_check, p), 0)
+                    if real_check >= meta_check and meta_check > 0:
+                        concluidos_este += 1
 
                 nome_p = mapa_nomes.get(p, p)
                 pct = int((concluidos_este / qtd_meta)*100) if qtd_meta > 0 else 0
@@ -345,12 +407,10 @@ elif pagina == "📊 Painel Gerencial":
                 st.download_button("📥 Baixar Volumetria", gerar_excel(df_vol), "Status_Volume.xlsx")
 
         st.markdown("---")
-        # Botões Rodapé
-        col_d1, col_d2, col_trash = st.columns([2, 2, 1])
+        b1,b2 = st.columns([3,1])
         if not df_res.empty:
-            excel_raw = gerar_excel(df_res)
-            col_d2.download_button("📥 Baixar Respostas Totais", excel_raw, f"Master_Respostas_{obter_hora().replace('/','-')}.xlsx")
+            out = BytesIO()
+            with pd.ExcelWriter(out, engine='xlsxwriter') as writer: df_res.to_excel(writer, index=False)
+            b1.download_button("📥 Baixar Excel", out.getvalue(), f"Master_{obter_hora().replace('/','-')}.xlsx")
         
-        if col_trash.button("🗑️ Limpar", key="trash_dash"):
-            st.session_state['resultados'] = []
-            st.rerun()
+        if b2.button("🗑️ Limpar Tudo", key="trash_dash"): st.session_state['resultados']=[]; st.rerun()
