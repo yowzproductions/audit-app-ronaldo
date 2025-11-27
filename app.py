@@ -68,10 +68,10 @@ if uploaded_file:
         else: auditor_valido = {'Nome': 'Geral', 'CPF': '000'}
     except: pass
 
-# --- ÁREA DE DOWNLOAD (Texto Simplificado) ---
+# Sidebar Download
 if st.session_state['resultados']:
     st.sidebar.markdown("---")
-    st.sidebar.write("📂 **Exportar Dados**") # Título mais amigável
+    st.sidebar.write("📂 **Exportar Dados**")
     excel_data = gerar_excel()
     if excel_data:
         nome_arq = f"Auditoria_{obter_hora().replace('/','-').replace(':','h')}.xlsx"
@@ -108,7 +108,6 @@ if pagina == "📝 EXECUTAR DTO 01":
         sel_pad = list(t_pad) if st.sidebar.checkbox("Todos Padrões", key="pe") else st.sidebar.multiselect("Padrões", t_pad)
 
         if sel_fil and sel_pad:
-            # Filtra Base
             df_m = df_treinos[(df_treinos['Filial'].isin(sel_fil)) & (df_treinos['Codigo_Padrao'].isin(sel_pad))]
             
             if df_m.empty: st.warning("Sem dados.")
@@ -152,9 +151,8 @@ if pagina == "📝 EXECUTAR DTO 01":
                     with st.expander(f"{icon} {nome} | {fil} ({qtd_pads} Padrões)"):
                         pads = df_m[df_m['CPF']==cpf]['Codigo_Padrao'].unique()
                         with st.form(key=f"f_{cpf}"):
-                            # --- BOTÃO TOPO (COM KEY ÚNICA) ---
                             col_save_top, _ = st.columns([1, 4])
-                            submit_top = col_save_top.form_submit_button("💾 Salvar", key=f"save_top_{cpf}")
+                            submit_top = col_save_top.form_submit_button("💾 Salvar", key=f"stop_{cpf}")
                             st.markdown("---")
 
                             resps, obss = {}, {}
@@ -173,8 +171,7 @@ if pagina == "📝 EXECUTAR DTO 01":
                                     obss[kw] = st.text_input("Obs", value=(prev['obs'] if prev else ""), key=f"obs_{kw}")
                                     st.markdown("---")
                             
-                            # --- BOTÃO FIM (COM KEY ÚNICA) ---
-                            submit_bottom = st.form_submit_button("💾 Salvar", key=f"save_bottom_{cpf}")
+                            submit_bottom = st.form_submit_button("💾 Salvar", key=f"sbot_{cpf}")
                             
                             if submit_top or submit_bottom:
                                 dh = obter_hora()
@@ -190,6 +187,20 @@ if pagina == "📝 EXECUTAR DTO 01":
                                         st.session_state['resultados'].append(reg)
                                         cnt+=1
                                 if cnt: st.success("Salvo!"); st.rerun()
+                
+                # --- ÁREA DE CONFERÊNCIA RESTAURADA ---
+                st.markdown("---")
+                st.subheader("📋 Resumo das Auditorias (Sessão Atual)")
+                
+                if st.session_state['resultados']:
+                    df_view = pd.DataFrame(st.session_state['resultados'])
+                    st.dataframe(df_view, use_container_width=True)
+                    
+                    if st.button("🗑️ Apagar Todo o Histórico", type="primary", key="limpar_exec"):
+                        st.session_state['resultados'] = []
+                        st.rerun()
+                else:
+                    st.info("Nenhuma auditoria realizada ainda.")
 
 # ================= PAINEL =================
 elif pagina == "📊 Painel Gerencial":
@@ -234,7 +245,7 @@ elif pagina == "📊 Painel Gerencial":
                 if resps.get(cpf,0) >= meta and meta>0: concluidos+=1
         
         c1,c2 = st.columns(2)
-        c1.metric("Total Pessoas", total)
+        c1.metric("Total Pessoas (Meta)", total)
         prog = concluidos/total if total else 0
         c2.metric("Concluídos", concluidos, f"{int(prog*100)}%")
         st.progress(prog)
@@ -246,4 +257,4 @@ elif pagina == "📊 Painel Gerencial":
             with pd.ExcelWriter(out, engine='xlsxwriter') as writer: df_res.to_excel(writer, index=False)
             b1.download_button("📥 Baixar Excel", out.getvalue(), f"Master_{obter_hora().replace('/','-')}.xlsx")
         
-        if b2.button("🗑️ Limpar Tudo"): st.session_state['resultados']=[]; st.rerun()
+        if b2.button("🗑️ Limpar Tudo", key="limpar_dash"): st.session_state['resultados']=[]; st.rerun()
