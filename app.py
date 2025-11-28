@@ -12,8 +12,6 @@ st.set_page_config(page_title="DTO 01 - DCS SCANIA", page_icon="🚛", layout="w
 if 'resultados' not in st.session_state: st.session_state['resultados'] = []
 if 'pagina_atual' not in st.session_state: st.session_state['pagina_atual'] = 0
 if 'auditor_logado' not in st.session_state: st.session_state['auditor_logado'] = None
-if 'permissoes' not in st.session_state: 
-    st.session_state['permissoes'] = {'filiais': [], 'padroes': [], 'perfil': ''}
 
 # --- 3. FUNÇÕES ---
 def obter_hora():
@@ -40,9 +38,8 @@ if uploaded_hist and not st.session_state['resultados']:
     try:
         for f in uploaded_hist:
             d = pd.read_excel(f)
-            # Limpeza CRÍTICA de colunas e dados
             d.columns = [c.strip() for c in d.columns]
-            for c in ['CPF','Padrao','Pergunta','Auditor_CPF','Filial']:
+            for c in ['CPF','Padrao','Pergunta','Auditor_CPF']:
                 if c in d.columns: d[c] = d[c].astype(str).str.strip()
             dfs.append(d)
         if dfs:
@@ -50,316 +47,323 @@ if uploaded_hist and not st.session_state['resultados']:
             st.sidebar.success(f"📦 Consolidado: {len(st.session_state['resultados'])} regs")
     except Exception as e: st.sidebar.error(f"Erro Histórico: {e}")
 
-# --- LOGIN (SEGURANÇA REFORÇADA) ---
-df_auditores = None
-
+# Login
+df_auditores, auditor_valido = None, None
 if uploaded_file:
     try:
         xls = pd.ExcelFile(uploaded_file)
         if 'Cadastro_Auditores' in xls.sheet_names:
             df_auditores = pd.read_excel(uploaded_file, sheet_name='Cadastro_Auditores')
             df_auditores['CPF_Auditor'] = df_auditores['CPF_Auditor'].astype(str).str.strip()
-            
             st.sidebar.markdown("---")
-            
-            if st.session_state['auditor_logado']:
-                st.sidebar.success(f"👤 {st.session_state['auditor_logado']['Nome']}")
-                if st.sidebar.button("Sair"):
-                    st.session_state['auditor_logado'] = None
-                    st.session_state['permissoes'] = {'filiais': [], 'padroes': [], 'perfil': ''}
-                    st.rerun()
-            else:
-                st.sidebar.subheader("🔐 Acesso Restrito")
-                cpf = st.sidebar.text_input("CPF (Apenas números)", type="password")
-                if st.sidebar.button("Entrar"):
-                    match = df_auditores[df_auditores['CPF_Auditor']==cpf.strip()]
-                    if not match.empty:
-                        user_data = match.iloc[0]
-                        
-                        # Processa Permissões
-                        raw_fil = str(user_data.get('Filiais_Permitidas', 'Todas'))
-                        if 'todas' in raw_fil.lower(): fils_perm = 'TODAS'
-                        else: fils_perm = [x.strip() for x in raw_fil.split(',')]
-                            
-                        raw_pad = str(user_data.get('Padroes_Permitidos', 'Todos'))
-                        if 'todos' in raw_pad.lower() or 'todas' in raw_pad.lower(): pads_perm = 'TODOS'
-                        else: pads_perm = [x.strip() for x in raw_pad.split(',')]
+            cpf = st.sidebar.text_input("Login (CPF)", type="password")
+            if cpf:
+                match = df_auditores[df_auditores['CPF_Auditor']==cpf.strip()]
+                if not match.empty:
+                    auditor_valido = {'Nome': match.iloc[0]['Nome_Auditor'], 'CPF': cpf}
+                    st.sidebar.success(f"Olá, {auditor_valido['Nome']}!")
+                else: st.sidebar.error("CPF Inválido")
+        else: auditor_valido = {'Nome': 'Geral', 'CPF': '000'}
+    except: pass
 
-                        st.session_state['auditor_logado'] = {'Nome': user_data['Nome_Auditor'], 'CPF': cpf}
-                        st.session_state['permissoes'] = {
-                            'filiais': fils_perm, 
-                            'padroes': pads_perm, 
-                            'perfil': str(user_data.get('Perfil', 'Auditor')).strip()
-                        }
-                        st.rerun()
-                    else:
-                        st.sidebar.error("CPF não autorizado.")
-        else:
-            # Modo Legado
-            st.session_state['auditor_logado'] = {'Nome': 'Geral', 'CPF': '000'}
-            st.session_state['permissoes'] = {'filiais': 'TODAS', 'padroes': 'TODOS', 'perfil': 'Gestor'}
-    except Exception as e: st.sidebar.warning(f"Erro Login: {e}")
-
-# Sidebar Download
+# Sidebar Download Rápido
 if st.session_state['resultados']:
     st.sidebar.markdown("---")
-    df_dw = pd.DataFrame(st.session_state['resultados'])
-    perms = st.session_state['permissoes']
-    # Segurança no Download
-    if st.session_state['auditor_logado'] and perms.get('perfil') != 'Gestor' and perms.get('filiais') != 'TODAS':
-        if 'Filial' in df_dw.columns:
-            df_dw = df_dw[df_dw['Filial'].isin(perms['filiais'])]
-    
-    excel_data = gerar_excel(df_dw)
-    if excel_data:
-        st.sidebar.download_button("📥 Baixar Meus Dados", excel_data, "Backup_Auditoria.xlsx", mime="application/vnd.ms-excel")
+    st.sidebar.write("📂 **Exportar Respostas**")
+    df_raw = pd.DataFrame(st.session_state['resultados'])
+    excel_data = gerar_excel(df_raw)
+    nome_arq = f"Respostas_{obter_hora().replace('/','-').replace(':','h')}.xlsx"
+    st.sidebar.download_button("📥 Baixar Planilha Bruta", excel_data, nome_arq, mime="application/vnd.ms-excel")
 
 st.sidebar.markdown("---")
 pagina = st.sidebar.radio("Menu:", ["📝 EXECUTAR DTO 01", "📊 Painel Gerencial"])
 
-# Leitura Base (Blindada)
+# Leitura Base
 df_treinos, df_perguntas, dados_ok = pd.DataFrame(), pd.DataFrame(), False
 if uploaded_file:
     try:
         df_treinos = pd.read_excel(uploaded_file, sheet_name='Base_Treinamentos')
         df_perguntas = pd.read_excel(uploaded_file, sheet_name='Padroes_Perguntas')
-        
-        # Converte tudo para string
         for df in [df_treinos, df_perguntas]:
-            for col in df.columns:
-                if col in ['CPF', 'Codigo_Padrao', 'Filial', 'Pergunta', 'Nome_Padrao']:
-                    df[col] = df[col].astype(str).str.strip()
+            if 'CPF' in df.columns: df['CPF'] = df['CPF'].astype(str).str.strip()
+            if 'Codigo_Padrao' in df.columns: df['Codigo_Padrao'] = df['Codigo_Padrao'].astype(str).str.strip()
+        if 'Pergunta' in df_perguntas.columns: df_perguntas['Pergunta'] = df_perguntas['Pergunta'].astype(str).str.strip()
+        if 'Nome_Padrao' in df_perguntas.columns: df_perguntas['Nome_Padrao'] = df_perguntas['Nome_Padrao'].astype(str).str.strip()
         dados_ok = True
     except Exception as e: st.error(f"Erro Base: {e}")
         # ================= EXECUÇÃO =================
 if pagina == "📝 EXECUTAR DTO 01":
     if not dados_ok: st.info("👈 Carregue a Base.")
-    elif df_auditores is not None and st.session_state['auditor_logado'] is None:
-        st.warning("🔒 Acesso Bloqueado. Faça login na barra lateral.")
+    elif df_auditores is not None and auditor_valido is None: st.warning("🔒 Faça Login.")
     else:
         st.title("📝 EXECUTAR DTO 01")
-        perms = st.session_state['permissoes']
+        st.sidebar.header("Filtros Execução")
         
-        # --- FILTROS COM SEGURANÇA APLICADA ---
-        todas_f = sorted(df_treinos['Filial'].dropna().unique())
-        if perms['filiais'] == 'TODAS': opts_f = todas_f
-        else: opts_f = sorted([f for f in todas_f if f in perms['filiais']])
-            
-        sel_fil = st.multiselect("Filiais Permitidas", opts_f, default=opts_f if len(opts_f)==1 else None)
+        t_fil = df_treinos['Filial'].dropna().unique()
+        sel_fil = st.sidebar.multiselect("Selecione a(s) Filial(is)", t_fil)
         
-        todas_p = sorted(df_perguntas['Codigo_Padrao'].dropna().unique())
-        if perms['padroes'] == 'TODOS': opts_p = todas_p
-        else: opts_p = sorted([p for p in todas_p if str(p) in perms['padroes']])
-            
-        sel_pad = st.multiselect("Padrões", opts_p, default=opts_p if st.checkbox("Selecionar Todos Padrões") else None)
+        t_pad = df_perguntas['Codigo_Padrao'].dropna().unique()
+        sel_pad = list(t_pad) if st.sidebar.checkbox("Todos Padrões", key="pe") else st.sidebar.multiselect("Padrões", t_pad)
 
         if sel_fil and sel_pad:
+            # Filtra Base
             df_m = df_treinos[(df_treinos['Filial'].isin(sel_fil)) & (df_treinos['Codigo_Padrao'].isin(sel_pad))]
             
-            if df_m.empty: st.warning("Nenhum dado encontrado.")
+            if df_m.empty: st.warning("Sem dados.")
             else:
-                # Mapas e Metas
+                # Mapa de Nomes e Metas
                 mapa_nomes = {}
+                # Garante string limpa
+                meta_por_padrao = df_perguntas.groupby('Codigo_Padrao').size()
+                meta_por_padrao.index = meta_por_padrao.index.astype(str).str.strip()
+                dict_metas = meta_por_padrao.to_dict()
+                
                 if 'Nome_Padrao' in df_perguntas.columns:
                     tn = df_perguntas[['Codigo_Padrao', 'Nome_Padrao']].drop_duplicates()
-                    mapa_nomes = pd.Series(tn.Nome_Padrao.values, index=tn.Codigo_Padrao).to_dict()
-                
-                # Meta por padrão (Qtd Perguntas)
-                dict_metas = df_perguntas.groupby('Codigo_Padrao').size().to_dict()
+                    mapa_nomes = pd.Series(tn.Nome_Padrao.values, index=tn.Codigo_Padrao.astype(str).str.strip()).to_dict()
 
                 rank = df_m.groupby(['CPF','Nome_Funcionario','Filial']).size().reset_index(name='Qtd')
                 rank = rank.sort_values(by=['Qtd','Filial'], ascending=[False,True])
                 
-                # Paginação
                 tot_p = (len(rank)-1)//10 + 1
                 c1,c2,c3 = st.columns([1,3,1])
-                if c1.button("⬅️") and st.session_state['pagina_atual']>0: st.session_state['pagina_atual']-=1; st.rerun()
-                if c3.button("➡️") and st.session_state['pagina_atual']<tot_p-1: st.session_state['pagina_atual']+=1; st.rerun()
+                if c1.button("⬅️") and st.session_state['pagina_atual']>0: 
+                    st.session_state['pagina_atual']-=1; st.rerun()
+                if c3.button("➡️") and st.session_state['pagina_atual']<tot_p-1: 
+                    st.session_state['pagina_atual']+=1; st.rerun()
                 c2.markdown(f"<div style='text-align:center'>Pág {st.session_state['pagina_atual']+1}/{tot_p}</div>", unsafe_allow_html=True)
                 
                 pg_rank = rank.iloc[st.session_state['pagina_atual']*10 : (st.session_state['pagina_atual']+1)*10]
                 
-                # Memória Rápida
+                # Memória
                 memoria = {}
                 for r in st.session_state['resultados']:
                     k = f"{str(r.get('CPF','')).strip()}_{str(r.get('Padrao','')).strip()}_{str(r.get('Pergunta','')).strip()}"
                     memoria[k] = {'res': r.get('Resultado'), 'obs': r.get('Observacao')}
                 
                 for _, row in pg_rank.iterrows():
-                    cpf = str(row['CPF']).strip()
+                    cpf_func = str(row['CPF']).strip()
                     nome = row['Nome_Funcionario']
                     filial = row['Filial']
+                    qtd_pads = row['Qtd']
                     
-                    # Status
-                    pads_cpf = df_m[df_m['CPF']==cpf]['Codigo_Padrao'].unique()
-                    meta_tot = sum(dict_metas.get(p,0) for p in pads_cpf)
+                    # --- CÁLCULO DE STATUS ---
+                    pads_no_filtro = df_m[df_m['CPF'].astype(str).str.strip() == cpf_func]['Codigo_Padrao'].unique()
+                    pads_no_filtro = [str(p).strip() for p in pads_no_filtro]
                     
-                    # Realizado (na memória)
-                    resp_tot = 0
+                    meta_total = sum(dict_metas.get(p, 0) for p in pads_no_filtro)
+                    
+                    respondidos = 0
                     for r in st.session_state['resultados']:
-                        if str(r.get('CPF','')).strip() == cpf and str(r.get('Padrao','')).strip() in pads_cpf:
-                            resp_tot += 1
+                        r_cpf = str(r.get('CPF','')).strip()
+                        r_pad = str(r.get('Padrao','')).strip()
+                        if r_cpf == cpf_func and r_pad in pads_no_filtro:
+                            respondidos += 1
                     
-                    if resp_tot == 0: icon = "⚪"
-                    elif resp_tot >= meta_tot and meta_tot > 0: icon = "🟢"
+                    if respondidos == 0: icon = "⚪"
+                    elif respondidos >= meta_total and meta_total > 0: icon = "🟢"
                     else: icon = "🟡"
                     
-                    with st.expander(f"{icon} {nome} | {filial} ({resp_tot}/{meta_tot} Perguntas)"):
-                        with st.form(key=f"f_{cpf}"):
+                    # MELHORIA 1: Info completa no título
+                    info_text = f"({qtd_pads} Padrões | {respondidos}/{meta_total})"
+                    
+                    with st.expander(f"{icon} {nome} | {filial} {info_text}"):
+                        pads_originais = df_m[df_m['CPF'].astype(str).str.strip() == cpf_func]['Codigo_Padrao'].unique()
+                        with st.form(key=f"f_{cpf_func}"):
+                            # MELHORIA 2: Botão Topo
+                            col_save_top, _ = st.columns([1, 4])
+                            submit_top = col_save_top.form_submit_button("💾 Salvar", key=f"stop_{cpf_func}")
+                            st.markdown("---")
                             resps, obss = {}, {}
-                            for p in pads_cpf:
-                                nome_p = mapa_nomes.get(p, "")
-                                st.markdown(f"**{p} - {nome_p}**")
-                                pergs = df_perguntas[df_perguntas['Codigo_Padrao']==p]
+                            for p_cod in pads_originais:
+                                p_str = str(p_cod).strip()
+                                nome_p = mapa_nomes.get(p_str, "")
+                                st.markdown(f"**{p_str} - {nome_p}**" if nome_p else f"**{p_str}**")
+                                pergs = df_perguntas[df_perguntas['Codigo_Padrao'].astype(str).str.strip() == p_str]
                                 for idx, pr in pergs.iterrows():
-                                    txt = pr['Pergunta']
-                                    kb = f"{cpf}_{p}_{txt}"
-                                    kw = f"{cpf}_{p}_{idx}"
-                                    
+                                    pt = pr['Pergunta']
+                                    kb = f"{cpf_func}_{p_str}_{pt}"
+                                    kw = f"{cpf_func}_{p_str}_{idx}"
                                     prev = memoria.get(kb)
-                                    idx_r = ["Conforme","Não Conforme","Não se Aplica"].index(prev['res']) if prev and prev['res'] in ["Conforme","Não Conforme","Não se Aplica"] else None
-                                    st.write(txt)
-                                    resps[kw] = st.radio("R", ["Conforme","Não Conforme","Não se Aplica"], key=kw, horizontal=True, index=idx_r, label_visibility="collapsed")
-                                    obss[kw] = st.text_input("Obs", value=(prev['obs'] if prev else ""), key=f"o_{kw}")
+                                    idx_r = None
+                                    obs_v = ""
+                                    if prev:
+                                        opts = ["Conforme", "Não Conforme", "Não se Aplica"]
+                                        if prev['res'] in opts: idx_r = opts.index(prev['res'])
+                                        obs_v = prev['obs'] if prev['obs'] else ""
+                                    st.write(pt)
+                                    resps[kw] = st.radio("R", ["Conforme", "Não Conforme", "Não se Aplica"], key=kw, horizontal=True, index=idx_r, label_visibility="collapsed")
+                                    obss[kw] = st.text_input("Obs", value=obs_v, key=f"obs_{kw}")
                                     st.markdown("---")
                             
-                            # BOTÃO ÚNICO DE SALVAR (ROBUSTO)
-                            if st.form_submit_button("💾 Salvar Auditoria"):
+                            # Botão Fim
+                            submit_bottom = st.form_submit_button("💾 Salvar", key=f"sbot_{cpf_func}")
+                            
+                            if submit_top or submit_bottom:
                                 dh = obter_hora()
                                 cnt = 0
                                 for k, v in resps.items():
                                     if v:
-                                        _, pr, ir = k.split('_', 2)
-                                        try: pt = df_perguntas.loc[int(ir), 'Pergunta']
-                                        except: pt = "Erro"
-                                        
-                                        # Remove anterior
-                                        st.session_state['resultados'] = [r for r in st.session_state['resultados'] if not (str(r.get('CPF','')).strip()==cpf and str(r.get('Padrao','')).strip()==pr and str(r.get('Pergunta','')).strip()==pt)]
-                                        
-                                        reg = {"Data":dh, "Filial":filial, "Funcionario":nome, "CPF":cpf, "Padrao":pr, "Pergunta":pt, "Resultado":v, "Observacao":obss.get(k,"")}
-                                        if st.session_state['auditor_logado']:
-                                            reg.update({"Auditor_Nome":st.session_state['auditor_logado']['Nome'], "Auditor_CPF":st.session_state['auditor_logado']['CPF']})
-                                        
+                                        _, pr_k, ir = k.split('_', 2)
+                                        try: pt_txt = df_perguntas.loc[int(ir), 'Pergunta']
+                                        except: pt_txt = "Erro"
+                                        st.session_state['resultados'] = [r for r in st.session_state['resultados'] if not (str(r.get('CPF','')).strip()==cpf_func and str(r.get('Padrao','')).strip()==pr_k and str(r.get('Pergunta','')).strip()==pt_txt)]
+                                        reg = {"Data":dh, "Filial":filial, "Funcionario":nome, "CPF":cpf_func, "Padrao":pr_k, "Pergunta":pt_txt, "Resultado":v, "Observacao":obss.get(k,"")}
+                                        if auditor_valido: reg.update({"Auditor_Nome":auditor_valido['Nome'], "Auditor_CPF":auditor_valido['CPF']})
                                         st.session_state['resultados'].append(reg)
                                         cnt+=1
                                 if cnt: st.success("Salvo!"); st.rerun()
-
-# ================= PAINEL =================
+                
+                st.markdown("---")
+                if st.session_state['resultados']:
+                    st.subheader("📋 Resumo Sessão")
+                    st.dataframe(pd.DataFrame(st.session_state['resultados']), use_container_width=True)
+                    if st.button("🗑️ Apagar Tudo", type="primary", key="limpar_exec"): st.session_state['resultados']=[]; st.rerun()
+                else: st.info("Vazio.")
+                    # ================= PAINEL =================
 elif pagina == "📊 Painel Gerencial":
     st.title("📊 Painel Gerencial")
     if not dados_ok: st.info("👈 Carregue a Base.")
     else:
-        perms = st.session_state['permissoes']
+        with st.expander("🔍 Raio-X (Erros de Cadastro)", expanded=False):
+            colisao = df_treinos.groupby('CPF')['Nome_Funcionario'].nunique()
+            errados = colisao[colisao > 1]
+            if not errados.empty:
+                st.error(f"CPFs Duplicados: {len(errados)}")
+                for cpf_e in errados.index:
+                    ns = df_treinos[df_treinos['CPF']==cpf_e]['Nome_Funcionario'].unique()
+                    st.write(f"{cpf_e}: {', '.join(ns)}")
+            else: st.success("Base OK.")
+
+        st.sidebar.header("Filtros Dashboard")
+        t_fil_d = df_treinos['Filial'].unique()
+        f_sel = list(t_fil_d) if st.sidebar.checkbox("Todas Filiais", value=True, key="fa") else st.sidebar.multiselect("Filiais", t_fil_d, default=t_fil_d)
         
-        # Filtros Dashboard (Com Segurança)
-        todas_f = sorted(df_treinos['Filial'].unique())
-        if perms['filiais'] == 'TODAS': opts_f = todas_f
-        else: opts_f = sorted([f for f in todas_f if f in perms['filiais']])
-        
-        st.write("Filtros:")
-        col_f, col_p = st.columns(2)
-        f_sel = col_f.multiselect("Filiais", opts_f, default=opts_f)
-        
-        todas_p = sorted(df_perguntas['Codigo_Padrao'].unique())
-        if perms['padroes'] == 'TODOS': opts_p = todas_p
-        else: opts_p = sorted([p for p in todas_p if str(p) in perms['padroes']])
-        p_sel = col_p.multiselect("Padrões", opts_p, default=opts_p)
+        t_pad_d = df_perguntas['Codigo_Padrao'].unique()
+        p_sel = list(t_pad_d) if st.sidebar.checkbox("Todos Padrões", value=True, key="pa") else st.sidebar.multiselect("Padrões", t_pad_d, default=t_pad_d)
         
         st.markdown("---")
         
-        # --- CÁLCULOS (META vs REALIZADO) ---
-        # 1. Meta (Escopo)
+        # --- CÁLCULOS GERAIS ---
         df_esc = df_treinos[(df_treinos['Filial'].isin(f_sel)) & (df_treinos['Codigo_Padrao'].isin(p_sel))]
-        total_pessoas = df_esc['CPF'].nunique()
-        total_vol = len(df_esc)
         
-        # 2. Realizado (Memória)
         df_res = pd.DataFrame(st.session_state['resultados'])
         df_rf = pd.DataFrame()
         if not df_res.empty:
-            # Filtra resultados pelas filiais/padrões selecionados no dash
             if 'Filial' in df_res.columns and 'Padrao' in df_res.columns:
                 df_rf = df_res[(df_res['Filial'].isin(f_sel)) & (df_res['Padrao'].isin(p_sel))]
         
-        resps_cpf = {}
-        resps_det = {}
-        if not df_rf.empty:
-            resps_cpf = df_rf.groupby('CPF').size().to_dict()
-            resps_det = df_rf.groupby(['CPF', 'Padrao']).size().to_dict()
-            
-        dict_metas = df_perguntas.groupby('Codigo_Padrao').size().to_dict()
+        # Mapa de Metas
+        aux_meta = df_perguntas.groupby('Codigo_Padrao').size()
+        aux_meta.index = aux_meta.index.astype(str).str.strip()
+        metas = aux_meta.to_dict()
         
-        # --- SELETOR ---
-        visao = st.radio("Visualização", ["👥 Pessoas", "📏 Padrões (Volume)"], horizontal=True)
+        # Respostas
+        resps = {}
+        if not df_rf.empty and 'CPF' in df_rf.columns:
+            temp = df_rf.copy()
+            temp['CPF'] = temp['CPF'].astype(str).str.strip()
+            resps = temp.groupby('CPF').size().to_dict()
+        
+        st.write("Modo de Visualização:")
+        visao = st.radio("Escolha:", ["👥 Por Pessoa", "📏 Por Padrão (Volume)"], horizontal=True, label_visibility="collapsed")
         st.markdown("---")
 
-        if visao == "👥 Pessoas":
-            counts = {'P':0, 'A':0, 'C':0}
-            data_det = []
+        if visao == "👥 Por Pessoa":
+            total = df_esc['CPF'].nunique()
+            counts = {'Pendente': 0, 'Parcial': 0, 'Concluido': 0}
+            lista_detalhe = []
             
-            for cpf in df_esc['CPF'].unique():
-                pads = df_esc[df_esc['CPF']==cpf]['Codigo_Padrao'].unique()
-                meta = sum(dict_metas.get(p,0) for p in pads)
-                real = resps_cpf.get(cpf, 0)
+            cpfs_unicos = df_esc['CPF'].astype(str).str.strip().unique()
+            for cpf in cpfs_unicos:
+                escopo_cpf = df_esc[df_esc['CPF'].astype(str).str.strip() == cpf]
+                pads_pessoa = escopo_cpf['Codigo_Padrao'].astype(str).str.strip().unique()
+                meta = sum(metas.get(p,0) for p in pads_pessoa)
+                real = resps.get(cpf, 0)
+                info = escopo_cpf.iloc[0]
                 
-                info = df_esc[df_esc['CPF']==cpf].iloc[0]
+                status = "🔴 Pendente"
+                if real == 0: counts['Pendente'] += 1
+                elif real >= meta and meta > 0: 
+                    counts['Concluido'] += 1; status = "🟢 Concluído"
+                else: 
+                    counts['Parcial'] += 1; status = "🟡 Parcial"
                 
-                if real == 0: stts="🔴 Pendente"; counts['P']+=1
-                elif real >= meta and meta>0: stts="🟢 Concluído"; counts['C']+=1
-                else: stts="🟡 Parcial"; counts['A']+=1
-                
-                pct = int((real/meta)*100) if meta>0 else 0
-                data_det.append({"Filial":info['Filial'], "Nome":info['Nome_Funcionario'], "Status":stts, "Progresso":f"{pct}%"})
+                pct = int((real/meta)*100) if meta > 0 else 0
+                lista_detalhe.append({"Filial": info['Filial'], "CPF": cpf, "Nome": info['Nome_Funcionario'], "Status": status, "Progresso": f"{real}/{meta} ({pct}%)"})
             
             c1,c2,c3,c4 = st.columns(4)
-            c1.metric("Pessoas", total_pessoas)
-            c2.metric("Concluídos", counts['C'])
-            c3.metric("Parcial", counts['A'])
-            c4.metric("Pendentes", counts['P'])
+            c1.metric("Total Pessoas", total)
+            c2.metric("Concluídos", counts['Concluido'])
+            c3.metric("Parcial", counts['Parcial'])
+            c4.metric("Pendentes", counts['Pendente'])
+            prog = counts['Concluido']/total if total else 0
+            st.progress(prog, f"Taxa de Conclusão: {int(prog*100)}%")
             
-            df_d = pd.DataFrame(data_det)
-            if not df_d.empty:
-                t1,t2,t3 = st.tabs(["🔴","🟡","🟢"])
-                with t1: st.dataframe(df_d[df_d['Status'].str.contains("Pendente")], use_container_width=True)
-                with t2: st.dataframe(df_d[df_d['Status'].str.contains("Parcial")], use_container_width=True)
-                with t3: st.dataframe(df_d[df_d['Status'].str.contains("Concluído")], use_container_width=True)
+            df_det = pd.DataFrame(lista_detalhe)
+            t1, t2, t3 = st.tabs(["🔴 Pendentes", "🟡 Parciais", "🟢 Concluídos"])
+            if not df_det.empty:
+                with t1: st.dataframe(df_det[df_det['Status'].str.contains("Pendente")], use_container_width=True, hide_index=True)
+                with t2: st.dataframe(df_det[df_det['Status'].str.contains("Parcial")], use_container_width=True, hide_index=True)
+                with t3: st.dataframe(df_det[df_det['Status'].str.contains("Concluído")], use_container_width=True, hide_index=True)
+                st.download_button("📥 Baixar Status Pessoas", gerar_excel(df_det), "Status_Pessoas.xlsx")
 
         else:
-            counts_v = {'Z':0, 'I':0, 'C':0}
-            vol_data = []
+            total_vol = len(df_esc) 
+            counts_vol = {'Zero': 0, 'Iniciado': 0, 'Completo': 0}
+            volumetria = []
             
-            # Itera sobre cada par (Pessoa, Padrão) que deve ser auditado
-            for _, r in df_esc.iterrows():
-                c, p = r['CPF'], r['Codigo_Padrao']
-                meta = dict_metas.get(p, 0)
-                real = resps_det.get((c, p), 0)
+            mapa_nomes = {}
+            if 'Nome_Padrao' in df_perguntas.columns:
+                tn = df_perguntas[['Codigo_Padrao', 'Nome_Padrao']].drop_duplicates()
+                mapa_nomes = pd.Series(tn.Nome_Padrao.values, index=tn.Codigo_Padrao.astype(str).str.strip()).to_dict()
+            
+            resps_det = {}
+            if not df_rf.empty:
+                temp_rf = df_rf.copy()
+                temp_rf['CPF'] = temp_rf['CPF'].astype(str).str.strip()
+                temp_rf['Padrao'] = temp_rf['Padrao'].astype(str).str.strip()
+                resps_det = temp_rf.groupby(['CPF', 'Padrao']).size().to_dict()
+
+            for _, row in df_esc.iterrows():
+                c = str(row['CPF']).strip(); p = str(row['Codigo_Padrao']).strip()
+                meta = metas.get(p, 0); real = resps_det.get((c, p), 0)
+                if real == 0: counts_vol['Zero'] += 1
+                elif real >= meta and meta > 0: counts_vol['Completo'] += 1
+                else: counts_vol['Iniciado'] += 1
+
+            padroes_unicos = df_esc['Codigo_Padrao'].astype(str).str.strip().unique()
+            for p in padroes_unicos:
+                linhas_p = df_esc[df_esc['Codigo_Padrao'].astype(str).str.strip() == p]
+                qtd_meta = len(linhas_p)
+                concluidos_este = 0
+                for _, r_esc in linhas_p.iterrows():
+                    c_check = str(r_esc['CPF']).strip()
+                    meta_check = metas.get(p, 0)
+                    real_check = resps_det.get((c_check, p), 0)
+                    if real_check >= meta_check and meta_check > 0: concluidos_este += 1
                 
-                if real == 0: counts_v['Z']+=1
-                elif real >= meta and meta>0: counts_v['C']+=1
-                else: counts_v['I']+=1
-            
+                nome_p = mapa_nomes.get(p, p)
+                pct = int((concluidos_este / qtd_meta)*100) if qtd_meta > 0 else 0
+                volumetria.append({"Código": p, "Descrição": nome_p, "Volume Total": qtd_meta, "Concluídas": concluidos_este, "%": f"{pct}%"})
+
             c1,c2,c3,c4 = st.columns(4)
             c1.metric("Volume Total", total_vol)
-            c2.metric("Concluídas", counts_v['C'])
-            c3.metric("Andamento", counts_v['I'])
-            c4.metric("Zero", counts_v['Z'])
+            c2.metric("Concluídas", counts_vol['Completo'])
+            c3.metric("Em Andamento", counts_vol['Iniciado'])
+            c4.metric("Não Iniciadas", counts_vol['Zero'])
+            prog_v = counts_vol['Completo']/total_vol if total_vol else 0
+            st.progress(prog_v, f"Cobertura Volumétrica: {int(prog_v*100)}%")
             
-            # Tabela Agrupada por Padrão
-            for p in df_esc['Codigo_Padrao'].unique():
-                q_meta = len(df_esc[df_esc['Codigo_Padrao']==p])
-                q_ok = 0
-                # Verifica quantos concluíram ESTE padrão
-                sub = df_esc[df_esc['Codigo_Padrao']==p]
-                for c_sub in sub['CPF']:
-                    m = dict_metas.get(p,0)
-                    r = resps_det.get((c_sub, p), 0)
-                    if r >= m and m>0: q_ok += 1
-                
-                pct = int((q_ok/q_meta)*100) if q_meta>0 else 0
-                vol_data.append({"Padrão": p, "Vol": q_meta, "Ok": q_ok, "%": f"{pct}%"})
-            
-            st.dataframe(pd.DataFrame(vol_data), use_container_width=True)
+            df_vol = pd.DataFrame(volumetria)
+            st.dataframe(df_vol, use_container_width=True, hide_index=True)
+            if not df_vol.empty: st.download_button("📥 Baixar Volumetria", gerar_excel(df_vol), "Status_Volume.xlsx")
 
         st.markdown("---")
-        if st.button("🗑️ Limpar Tudo"): st.session_state['resultados']=[]; st.rerun()
+        b1,b2 = st.columns([3,1])
+        if not df_res.empty:
+            out = BytesIO()
+            with pd.ExcelWriter(out, engine='xlsxwriter') as writer: df_res.to_excel(writer, index=False)
+            b1.download_button("📥 Baixar Excel", out.getvalue(), f"Master_{obter_hora().replace('/','-')}.xlsx")
         
+        if b2.button("🗑️ Limpar Tudo", key="trash_dash"): st.session_state['resultados']=[]; st.rerun()
