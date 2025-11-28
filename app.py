@@ -258,13 +258,17 @@ elif pagina == "📊 Painel Gerencial":
     elif df_auditores is not None and st.session_state['auditor_logado'] is None: st.warning("🔒 Faça Login.")
     else:
         perms = st.session_state['permissoes']
-        with st.expander("🔍 Raio-X", expanded=False):
+        
+        # --- DIAGNÓSTICO ---
+        with st.expander("🔍 Raio-X (Erros de Cadastro)", expanded=False):
             colisao = df_treinos.groupby('CPF')['Nome_Funcionario'].nunique()
             errados = colisao[colisao > 1]
             if not errados.empty: st.error(f"CPFs Duplicados: {len(errados)}")
             else: st.success("Base OK.")
 
         st.sidebar.header("Filtros Dashboard")
+        
+        # Filtros
         todas_f = sorted(df_treinos['Filial'].unique())
         if perms['filiais'] == 'TODAS': opts_f = todas_f
         else: opts_f = sorted([f for f in todas_f if f in perms['filiais']])
@@ -277,6 +281,7 @@ elif pagina == "📊 Painel Gerencial":
         
         st.markdown("---")
         
+        # --- PREPARAÇÃO DE DADOS ---
         df_esc = df_treinos[(df_treinos['Filial'].isin(f_sel)) & (df_treinos['Codigo_Padrao'].isin(p_sel))]
         
         df_res = pd.DataFrame(st.session_state['resultados'])
@@ -286,44 +291,75 @@ elif pagina == "📊 Painel Gerencial":
                 df_rf = df_res[(df_res['Filial'].isin(f_sel)) & (df_res['Padrao'].isin(p_sel))]
         
         metas = df_perguntas.groupby('Codigo_Padrao').size().to_dict()
-        
-        # --- RANKING DE AUDITORES (GESTOR) ---
+
+        # --- ÁREA DE GESTOR: PERFORMANCE DETALHADA ---
         if perms.get('perfil') == 'Gestor':
-            st.subheader("🏆 Performance por Auditor")
+            st.subheader("🏆 Performance Detalhada por Auditor")
             
-            # 1. Pega a lista completa de auditores do cadastro (Salva na Parte 1)
-            lista_oficial = st.session_state.get('lista_auditores', [])
-            df_base_aud = pd.DataFrame(lista_oficial, columns=['Auditor'])
-            
-            # 2. Pega os realizados
-            if not df_rf.empty and 'Auditor_Nome' in df_rf.columns:
-                contagem = df_rf['Auditor_Nome'].value_counts().reset_index()
-                contagem.columns = ['Auditor', 'Respostas']
-            else:
-                contagem = pd.DataFrame(columns=['Auditor', 'Respostas'])
-            
-            # 3. Cruza (Left Join) para mostrar quem tem 0
-            # Padroniza para evitar erro de maiuscula/minuscula no merge
-            if not df_base_aud.empty:
-                df_base_aud['Auditor_Join'] = df_base_aud['Auditor'].astype(str).str.strip().str.lower()
-                if not contagem.empty:
-                    contagem['Auditor_Join'] = contagem['Auditor'].astype(str).str.strip().str.lower()
+            # Recarrega cadastro de auditores para garantir lista completa
+            tabela_perf = []
+            try:
+                xls_aud = pd.ExcelFile(uploaded_file)
+                if 'Cadastro_Auditores' in xls_aud.sheet_names:
+                    df_aud_base = pd.read_excel(uploaded_file, sheet_name='Cadastro_Auditores')
                     
-                    df_rank = df_base_aud.merge(contagem[['Auditor_Join', 'Respostas']], on='Auditor_Join', how='left').fillna(0)
+                    # Para cada auditor cadastrado, calcula o "Universo" dele
+                    for _, row_aud in df_aud_base.iterrows():
+                        nome_aud = row_aud['Nome_Auditor']
+                        
+                        # 1. Lê permissões deste auditor específico
+                        p_fil_aud = str(row_aud.get('Filiais_Permitidas', 'Todas'))
+                        if 'todas' in p_fil_aud.lower(): lista_f_aud = list(df_treinos['Filial'].unique())
+                        else: lista_f_aud = [x.strip() for x in p_fil_aud.split(',')]
+                        
+                        p_pad_aud = str(row_aud.get('Padroes_Permitidos', 'Todos'))
+                        if 'todos' in p_pad_aud.lower(): lista_p_aud = list(df_perguntas['Codigo_Padrao'].unique())
+                        else: lista_p_aud = [x.strip() for x in p_pad_aud.split(',')]
+                        
+                        # 2. Calcula META (Quantas perguntas existem no universo dele?)
+                        # Filtra base de treino pelo universo dele
+                        df_universo = df_treinos[
+                            (df_treinos['Filial'].isin(lista_f_aud)) & 
+                            (df_treinos['Codigo_Padrao'].isin(lista_p_aud))
+                        ]
+                        
+                        meta_auditor = 0
+                        for _, r_uni in df_universo.iterrows():
+                            # Soma perguntas dos padrões dos funcionários dele
+                            meta_auditor += metas.get(str(r_uni['Codigo_Padrao']).strip(), 0)
+                        
+                        # 3. Calcula REALIZADO (Quantas respostas têm o nome dele?)
+                        realizado_auditor = 0
+                        if not df_rf.empty and 'Auditor_Nome' in df_rf.columns:
+                            realizado_auditor = len(df_rf[df_rf['Auditor_Nome'] == nome_aud])
+                        
+                        # 4. Métricas Finais
+                        pendente_auditor = meta_auditor - realizado_auditor
+                        if pendente_auditor < 0: pendente_auditor = 0 # Proteção
+                        pct_aud = int((realizado_auditor / meta_auditor)*100) if meta_auditor > 0 else 0
+                        
+                        tabela_perf.append({
+                            "Auditor": nome_aud,
+                            "Meta (Perguntas)": meta_auditor,
+                            "Realizado": realizado_auditor,
+                            "Pendente": pendente_auditor,
+                            "% Avanço": f"{pct_aud}%"
+                        })
+                    
+                    df_perf = pd.DataFrame(tabela_perf)
+                    # Ordena por quem fez mais
+                    df_perf = df_perf.sort_values(by="Realizado", ascending=False)
+                    st.dataframe(df_perf, use_container_width=True, hide_index=True)
+                    
                 else:
-                    df_rank = df_base_aud.copy()
-                    df_rank['Respostas'] = 0
+                    st.info("Aba 'Cadastro_Auditores' necessária para cálculo de meta individual.")
+            except Exception as e:
+                st.warning(f"Não foi possível calcular metas individuais: {e}")
                 
-                df_rank = df_rank[['Auditor', 'Respostas']].sort_values(by='Respostas', ascending=False)
-                
-                c_r1, c_r2 = st.columns([1, 2])
-                with c_r1: st.dataframe(df_rank, use_container_width=True, hide_index=True)
-                with c_r2: st.bar_chart(df_rank.set_index('Auditor'))
-            else:
-                st.info("Lista de auditores não encontrada no cadastro.")
             st.markdown("---")
 
-        st.write("Visualização:")
+        # --- VISUALIZAÇÃO OPERACIONAL ---
+        st.write("Modo de Visualização:")
         visao = st.radio("V", ["👥 Por Pessoa", "📏 Por Padrão"], horizontal=True, label_visibility="collapsed")
         st.markdown("---")
 
@@ -331,15 +367,19 @@ elif pagina == "📊 Painel Gerencial":
             total = df_esc['CPF'].nunique()
             counts = {'P':0, 'A':0, 'C':0}
             data_list = []
+            
             resps = {}
             if not df_rf.empty: resps = df_rf.groupby('CPF').size().to_dict()
+            
             for cpf in df_esc['CPF'].unique():
                 pads = df_esc[df_esc['CPF']==cpf]['Codigo_Padrao'].unique()
                 meta = sum(metas.get(p,0) for p in pads)
                 real = resps.get(cpf, 0)
+                
                 if real == 0: stt="🔴 Pendente"; counts['P']+=1
                 elif real >= meta and meta>0: stt="🟢 Concluído"; counts['C']+=1
                 else: stt="🟡 Parcial"; counts['A']+=1
+                
                 info = df_esc[df_esc['CPF']==cpf].iloc[0]
                 pct = int((real/meta)*100) if meta>0 else 0
                 data_list.append({"Filial":info['Filial'], "Nome":info['Nome_Funcionario'], "Status":stt, "Prog":f"{real}/{meta} ({pct}%)"})
@@ -364,10 +404,12 @@ elif pagina == "📊 Painel Gerencial":
             total_vol = len(df_esc) 
             counts_v = {'Z':0, 'I':0, 'C':0}
             vol_data = []
+            
             mapa_nomes = {}
             if 'Nome_Padrao' in df_perguntas.columns:
                 tn = df_perguntas[['Codigo_Padrao', 'Nome_Padrao']].drop_duplicates()
-                mapa_nomes = pd.Series(tn.Nome_Padrao.values, index=tn.Codigo_Padrao).to_dict()
+                mapa_nomes = pd.Series(tn.Nome_Padrao.values, index=tn.Codigo_Padrao.astype(str).str.strip()).to_dict()
+            
             resps_det = {}
             if not df_rf.empty: resps_det = df_rf.groupby(['CPF', 'Padrao']).size().to_dict()
 
@@ -386,6 +428,7 @@ elif pagina == "📊 Painel Gerencial":
                 for c in sub['CPF']:
                     m = metas.get(p,0)
                     if resps_det.get((c,p),0) >= m and m>0: qok+=1
+                
                 n_p = mapa_nomes.get(p,p)
                 pct = int((qok/qm)*100) if qm>0 else 0
                 vol_data.append({"Padrão":p, "Desc":n_p, "Vol":qm, "Ok":qok, "%":f"{pct}%"})
