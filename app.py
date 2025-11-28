@@ -292,22 +292,25 @@ elif pagina == "📊 Painel Gerencial":
         
         metas = df_perguntas.groupby('Codigo_Padrao').size().to_dict()
 
-        # --- ÁREA DE GESTOR: PERFORMANCE DETALHADA ---
+        # --- ÁREA DE GESTOR: PERFORMANCE DETALHADA (FILTRADA) ---
         if perms.get('perfil') == 'Gestor':
-            st.subheader("🏆 Performance Detalhada por Auditor")
+            st.subheader("🏆 Performance Operacional (Auditores)")
             
-            # Recarrega cadastro de auditores para garantir lista completa
             tabela_perf = []
             try:
                 xls_aud = pd.ExcelFile(uploaded_file)
                 if 'Cadastro_Auditores' in xls_aud.sheet_names:
                     df_aud_base = pd.read_excel(uploaded_file, sheet_name='Cadastro_Auditores')
                     
-                    # Para cada auditor cadastrado, calcula o "Universo" dele
                     for _, row_aud in df_aud_base.iterrows():
+                        # --- FILTRO: IGNORA GESTORES NA LISTA ---
+                        perfil_atual = str(row_aud.get('Perfil', '')).strip().lower()
+                        if 'gestor' in perfil_atual:
+                            continue # Pula para o próximo
+                            
                         nome_aud = row_aud['Nome_Auditor']
                         
-                        # 1. Lê permissões deste auditor específico
+                        # 1. Lê permissões
                         p_fil_aud = str(row_aud.get('Filiais_Permitidas', 'Todas'))
                         if 'todas' in p_fil_aud.lower(): lista_f_aud = list(df_treinos['Filial'].unique())
                         else: lista_f_aud = [x.strip() for x in p_fil_aud.split(',')]
@@ -316,8 +319,7 @@ elif pagina == "📊 Painel Gerencial":
                         if 'todos' in p_pad_aud.lower(): lista_p_aud = list(df_perguntas['Codigo_Padrao'].unique())
                         else: lista_p_aud = [x.strip() for x in p_pad_aud.split(',')]
                         
-                        # 2. Calcula META (Quantas perguntas existem no universo dele?)
-                        # Filtra base de treino pelo universo dele
+                        # 2. Calcula META (Universo de Perguntas)
                         df_universo = df_treinos[
                             (df_treinos['Filial'].isin(lista_f_aud)) & 
                             (df_treinos['Codigo_Padrao'].isin(lista_p_aud))
@@ -325,17 +327,16 @@ elif pagina == "📊 Painel Gerencial":
                         
                         meta_auditor = 0
                         for _, r_uni in df_universo.iterrows():
-                            # Soma perguntas dos padrões dos funcionários dele
                             meta_auditor += metas.get(str(r_uni['Codigo_Padrao']).strip(), 0)
                         
-                        # 3. Calcula REALIZADO (Quantas respostas têm o nome dele?)
+                        # 3. Calcula REALIZADO (Perguntas Respondidas)
                         realizado_auditor = 0
                         if not df_rf.empty and 'Auditor_Nome' in df_rf.columns:
                             realizado_auditor = len(df_rf[df_rf['Auditor_Nome'] == nome_aud])
                         
-                        # 4. Métricas Finais
+                        # 4. Métricas
                         pendente_auditor = meta_auditor - realizado_auditor
-                        if pendente_auditor < 0: pendente_auditor = 0 # Proteção
+                        if pendente_auditor < 0: pendente_auditor = 0
                         pct_aud = int((realizado_auditor / meta_auditor)*100) if meta_auditor > 0 else 0
                         
                         tabela_perf.append({
@@ -346,15 +347,17 @@ elif pagina == "📊 Painel Gerencial":
                             "% Avanço": f"{pct_aud}%"
                         })
                     
-                    df_perf = pd.DataFrame(tabela_perf)
-                    # Ordena por quem fez mais
-                    df_perf = df_perf.sort_values(by="Realizado", ascending=False)
-                    st.dataframe(df_perf, use_container_width=True, hide_index=True)
+                    if tabela_perf:
+                        df_perf = pd.DataFrame(tabela_perf)
+                        df_perf = df_perf.sort_values(by="% Avanço", ascending=False)
+                        st.dataframe(df_perf, use_container_width=True, hide_index=True)
+                    else:
+                        st.info("Nenhum auditor operacional encontrado no cadastro.")
                     
                 else:
-                    st.info("Aba 'Cadastro_Auditores' necessária para cálculo de meta individual.")
+                    st.info("Aba 'Cadastro_Auditores' necessária.")
             except Exception as e:
-                st.warning(f"Não foi possível calcular metas individuais: {e}")
+                st.warning(f"Erro cálculo performance: {e}")
                 
             st.markdown("---")
 
