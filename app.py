@@ -47,7 +47,7 @@ if uploaded_hist and not st.session_state['resultados']:
             st.sidebar.success(f"📦 Consolidado: {len(st.session_state['resultados'])} regs")
     except Exception as e: st.sidebar.error(f"Erro Histórico: {e}")
 
-# --- LOGIN COM PERMISSÕES (RBAC CORRIGIDO) ---
+# --- LOGIN COM PERMISSÕES (RBAC) ---
 df_auditores, auditor_valido = None, None
 permissoes = {'filiais': [], 'padroes': [], 'perfil': ''}
 
@@ -63,11 +63,12 @@ if uploaded_file:
             if cpf:
                 match = df_auditores[df_auditores['CPF_Auditor']==cpf.strip()]
                 if not match.empty:
+                    # Captura dados do usuário
                     user_data = match.iloc[0]
                     nome_user = user_data['Nome_Auditor']
                     perfil_user = str(user_data.get('Perfil', 'Auditor')).strip()
                     
-                    # Processa Filiais (Normalizando espaços)
+                    # Processa Filiais (Normalizando)
                     raw_fil = str(user_data.get('Filiais_Permitidas', 'Todas'))
                     if 'todas' in raw_fil.lower():
                         fils_perm = 'TODAS'
@@ -85,27 +86,26 @@ if uploaded_file:
                     permissoes = {'filiais': fils_perm, 'padroes': pads_perm, 'perfil': perfil_user}
                     
                     st.sidebar.success(f"Olá, {nome_user}")
-                    # Debug Visual (Para você conferir se ele leu certo)
-                    if fils_perm != 'TODAS':
-                        st.sidebar.caption(f"Filiais: {', '.join(fils_perm)}")
                 else: st.sidebar.error("CPF não cadastrado.")
         else:
+            # Modo Legado (Sem aba de cadastro = Acesso Total)
             auditor_valido = {'Nome': 'Geral', 'CPF': '000'}
             permissoes = {'filiais': 'TODAS', 'padroes': 'TODOS', 'perfil': 'Gestor'}
-    except: pass
+    except Exception as e: st.sidebar.warning(f"Erro Login: {e}")
 
-# Download Rápido
+# Sidebar Download
 if st.session_state['resultados']:
     st.sidebar.markdown("---")
-    st.sidebar.write("📂 **Exportar**")
+    st.sidebar.write("📂 **Exportar Dados**")
     df_dw = pd.DataFrame(st.session_state['resultados'])
-    # Filtra download se for auditor
+    # Filtro de segurança no download também
     if auditor_valido and permissoes['perfil'] != 'Gestor' and permissoes['filiais'] != 'TODAS':
         df_dw = df_dw[df_dw['Filial'].isin(permissoes['filiais'])]
-    
+        
     excel_data = gerar_excel(df_dw)
     if excel_data:
-        st.sidebar.download_button("📥 Baixar Planilha", excel_data, "Backup_Auditoria.xlsx", mime="application/vnd.ms-excel")
+        nome_arq = f"Auditoria_{obter_hora().replace('/','-').replace(':','h')}.xlsx"
+        st.sidebar.download_button("📥 Baixar Planilha", excel_data, nome_arq, mime="application/vnd.ms-excel")
 
 st.sidebar.markdown("---")
 pagina = st.sidebar.radio("Menu:", ["📝 EXECUTAR DTO 01", "📊 Painel Gerencial"])
@@ -122,9 +122,9 @@ if uploaded_file:
         if 'Pergunta' in df_perguntas.columns: df_perguntas['Pergunta'] = df_perguntas['Pergunta'].astype(str).str.strip()
         if 'Nome_Padrao' in df_perguntas.columns: df_perguntas['Nome_Padrao'] = df_perguntas['Nome_Padrao'].astype(str).str.strip()
         
-        # Normaliza Filiais para bater com cadastro
+        # Normalização Crítica para bater com o Excel de Permissões
         if 'Filial' in df_treinos.columns:
-            df_treinos['Filial'] = df_treinos['Filial'].str.strip()
+            df_treinos['Filial'] = df_treinos['Filial'].astype(str).str.strip()
             
         dados_ok = True
     except Exception as e: st.error(f"Erro Base: {e}")
@@ -136,30 +136,33 @@ if pagina == "📝 EXECUTAR DTO 01":
         st.title("📝 EXECUTAR DTO 01")
         st.sidebar.header("Filtros Execução")
         
-        # --- LÓGICA DE SEGURANÇA (FILIAIS) ---
+        # --- APLICAÇÃO DE SEGURANÇA (FILIAIS) ---
         todas_f_base = df_treinos['Filial'].dropna().unique()
-        if permissoes['filiais'] == 'TODAS':
-            opcoes_f = todas_f_base
-        else:
-            # Mostra apenas o que está na permissão E existe na base
-            opcoes_f = [f for f in todas_f_base if f in permissoes['filiais']]
-            
-        sel_fil = st.sidebar.multiselect("Selecione a(s) Filial(is)", opcoes_f, default=opcoes_f if len(opcoes_f)==1 else None)
         
-        # --- LÓGICA DE SEGURANÇA (PADRÕES) ---
-        todas_p_base = df_perguntas['Codigo_Padrao'].dropna().unique()
-        if permissoes['padroes'] == 'TODOS':
-            opcoes_p = todas_p_base
+        if permissoes['filiais'] == 'TODAS':
+            opcoes_filiais = sorted(todas_f_base)
         else:
-            opcoes_p = [p for p in todas_p_base if str(p) in permissoes['padroes']]
+            # Filtra apenas as permitidas que existem na base
+            opcoes_filiais = sorted([f for f in todas_f_base if f in permissoes['filiais']])
             
-        sel_pad = list(opcoes_p) if st.sidebar.checkbox("Todos Meus Padrões", key="pe") else st.sidebar.multiselect("Padrões", opcoes_p)
+        # O Multiselect agora recebe a lista filtrada (opcoes_filiais)
+        sel_fil = st.sidebar.multiselect("Selecione Filiais", options=opcoes_filiais, default=opcoes_filiais if len(opcoes_filiais)==1 else None)
+        
+        # --- APLICAÇÃO DE SEGURANÇA (PADRÕES) ---
+        todas_p_base = df_perguntas['Codigo_Padrao'].dropna().unique()
+        
+        if permissoes['padroes'] == 'TODOS':
+            opcoes_padroes = todas_p_base
+        else:
+            opcoes_padroes = [p for p in todas_p_base if str(p) in permissoes['padroes']]
+            
+        sel_pad = list(opcoes_padroes) if st.sidebar.checkbox("Todos Meus Padrões", key="pe") else st.sidebar.multiselect("Padrões", opcoes_padroes)
 
         if sel_fil and sel_pad:
             # Filtra Base
             df_m = df_treinos[(df_treinos['Filial'].isin(sel_fil)) & (df_treinos['Codigo_Padrao'].isin(sel_pad))]
             
-            if df_m.empty: st.warning("Sem dados para o seu perfil.")
+            if df_m.empty: st.warning("Sem dados (Verifique se há funcionários nesta filial com estes padrões).")
             else:
                 # Mapas
                 mapa_nomes = {}
@@ -210,8 +213,8 @@ if pagina == "📝 EXECUTAR DTO 01":
                             resps, obss = {}, {}
                             for p in pads_orig:
                                 p_str = str(p).strip()
-                                n_p = mapa_nomes.get(p_str, "")
-                                st.markdown(f"**{p_str} - {n_p}**" if n_p else f"**{p_str}**")
+                                nome_p = mapa_nomes.get(p_str, "")
+                                st.markdown(f"**{p_str} - {nome_p}**" if nome_p else f"**{p_str}**")
                                 pergs = df_perguntas[df_perguntas['Codigo_Padrao'].astype(str).str.strip() == p_str]
                                 for idx, pr in pergs.iterrows():
                                     pt = pr['Pergunta']
@@ -254,14 +257,21 @@ elif pagina == "📊 Painel Gerencial":
     if not dados_ok: st.info("👈 Carregue a Base.")
     elif df_auditores is not None and auditor_valido is None: st.warning("🔒 Faça Login.")
     else:
-        # --- SEGURANÇA NO DASHBOARD ---
+        with st.expander("🔍 Raio-X (Erros de Cadastro)", expanded=False):
+            colisao = df_treinos.groupby('CPF')['Nome_Funcionario'].nunique()
+            errados = colisao[colisao > 1]
+            if not errados.empty:
+                st.error(f"CPFs Duplicados: {len(errados)}")
+            else: st.success("Base OK.")
+
         st.sidebar.header("Filtros Dashboard")
         
+        # --- SEGURANÇA NO DASHBOARD ---
         todas_f_base = df_treinos['Filial'].unique()
         if permissoes['filiais'] == 'TODAS':
-            opts_f = todas_f_base
+            opts_f = sorted(todas_f_base)
         else:
-            opts_f = [f for f in todas_f_base if f in permissoes['filiais']]
+            opts_f = sorted([f for f in todas_f_base if f in permissoes['filiais']])
             
         f_sel = st.sidebar.multiselect("Filtrar Filiais", opts_f, default=opts_f)
         
@@ -275,7 +285,6 @@ elif pagina == "📊 Painel Gerencial":
         
         st.markdown("---")
         
-        # Cálculos e Visualizações (Mantidos)
         df_esc = df_treinos[(df_treinos['Filial'].isin(f_sel)) & (df_treinos['Codigo_Padrao'].isin(p_sel))]
         
         df_res = pd.DataFrame(st.session_state['resultados'])
@@ -283,6 +292,11 @@ elif pagina == "📊 Painel Gerencial":
         if not df_res.empty:
             if 'Filial' in df_res.columns and 'Padrao' in df_res.columns:
                 df_rf = df_res[(df_res['Filial'].isin(f_sel)) & (df_res['Padrao'].isin(p_sel))]
+        
+        resps = {}
+        if not df_rf.empty and 'CPF' in df_rf.columns:
+            temp = df_rf.copy(); temp['CPF'] = temp['CPF'].astype(str).str.strip()
+            resps = temp.groupby('CPF').size().to_dict()
         
         aux_meta = df_perguntas.groupby('Codigo_Padrao').size()
         aux_meta.index = aux_meta.index.astype(str).str.strip()
@@ -296,11 +310,6 @@ elif pagina == "📊 Painel Gerencial":
             total = df_esc['CPF'].nunique()
             counts = {'Pendente': 0, 'Parcial': 0, 'Concluido': 0}
             lista_detalhe = []
-            
-            resps = {}
-            if not df_rf.empty and 'CPF' in df_rf.columns:
-                temp = df_rf.copy(); temp['CPF'] = temp['CPF'].astype(str).str.strip()
-                resps = temp.groupby('CPF').size().to_dict()
             
             cpfs_unicos = df_esc['CPF'].astype(str).str.strip().unique()
             for cpf in cpfs_unicos:
@@ -378,20 +387,4 @@ elif pagina == "📊 Painel Gerencial":
             c1,c2,c3,c4 = st.columns(4)
             c1.metric("Volume Total", total_vol)
             c2.metric("Concluídas", counts_vol['Completo'])
-            c3.metric("Em Andamento", counts_vol['Iniciado'])
-            c4.metric("Não Iniciadas", counts_vol['Zero'])
-            prog_v = counts_vol['Completo']/total_vol if total_vol else 0
-            st.progress(prog_v, f"Cobertura Volumétrica: {int(prog_v*100)}%")
-            
-            df_vol = pd.DataFrame(volumetria)
-            st.dataframe(df_vol, use_container_width=True, hide_index=True)
-            if not df_vol.empty: st.download_button("📥 Baixar Volumetria", gerar_excel(df_vol), "Status_Volume.xlsx")
-
-        st.markdown("---")
-        b1,b2 = st.columns([3,1])
-        if not df_res.empty:
-            out = BytesIO()
-            with pd.ExcelWriter(out, engine='xlsxwriter') as writer: df_res.to_excel(writer, index=False)
-            b1.download_button("📥 Baixar Excel", out.getvalue(), f"Master_{obter_hora().replace('/','-')}.xlsx")
-        
-        if b2.button("🗑️ Limpar Tudo", key="trash_dash"): st.session_state['resultados']=[]; st.rerun()
+            c3.metric("Em Andamento
