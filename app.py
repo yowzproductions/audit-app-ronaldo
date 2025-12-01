@@ -4,7 +4,6 @@ from io import BytesIO
 from datetime import datetime
 import os
 import pytz
-from streamlit_gsheets import GSheetsConnection
 
 # --- 1. CONFIGURAÇÃO ---
 st.set_page_config(page_title="DTO 01 - DCS SCANIA", page_icon="🚛", layout="wide")
@@ -15,6 +14,7 @@ if 'pagina_atual' not in st.session_state: st.session_state['pagina_atual'] = 0
 if 'auditor_logado' not in st.session_state: st.session_state['auditor_logado'] = None
 if 'permissoes' not in st.session_state: 
     st.session_state['permissoes'] = {'filiais': [], 'padroes': [], 'perfil': ''}
+if 'lista_auditores' not in st.session_state: st.session_state['lista_auditores'] = []
 
 # --- 3. FUNÇÕES ---
 def obter_hora():
@@ -31,60 +31,16 @@ def achar_coluna(df, termo):
         if termo.lower() in col.lower(): return col
     return None
 
-# --- 4. BARRA LATERAL E CONEXÃO ---
-st.sidebar.header("1. Conexão")
+# --- 4. BARRA LATERAL ---
+st.sidebar.header("1. Configuração")
 if os.path.exists("logo.png"): st.sidebar.image("logo.png", use_container_width=True)
 else: st.sidebar.write("🏢 DTO 01 - DCS SCANIA")
 
-# --- CONEXÃO GOOGLE SHEETS (AUTOMÁTICA) ---
-dados_ok = False
-df_treinos = pd.DataFrame()
-df_perguntas = pd.DataFrame()
-df_auditores = None
+# Uploads
+uploaded_file = st.sidebar.file_uploader("Base (Excel)", type=["xlsx"], key="base")
+uploaded_hist = st.sidebar.file_uploader("Histórico", type=["xlsx"], key="hist", accept_multiple_files=True)
 
-try:
-    # Cria a conexão usando os Segredos
-    conn = st.connection("gsheets", type=GSheetsConnection)
-    
-    with st.spinner('Conectando à Base DCS Scania...'):
-        # Lê as abas diretamente da nuvem (TTL de 10 min para cache)
-        df_treinos = conn.read(worksheet="Base_Treinamentos", ttl=600)
-        df_perguntas = conn.read(worksheet="Padroes_Perguntas", ttl=600)
-        
-        # Tenta ler auditores (se existir)
-        try:
-            df_auditores = conn.read(worksheet="Cadastro_Auditores", ttl=600)
-        except:
-            df_auditores = None
-
-        # Normalização de Dados (Limpeza)
-        for df in [df_treinos, df_perguntas]:
-            # Remove linhas vazias
-            df.dropna(how='all', inplace=True)
-            # Limpa colunas
-            df.columns = [c.strip() for c in df.columns]
-            for col in df.columns:
-                if col in ['CPF', 'Codigo_Padrao', 'Filial', 'Pergunta', 'Nome_Padrao']:
-                    df[col] = df[col].astype(str).str.strip()
-        
-        if df_auditores is not None:
-            df_auditores.dropna(how='all', inplace=True)
-            df_auditores.columns = [c.strip() for c in df_auditores.columns]
-            # Acha coluna CPF
-            col_cpf = achar_coluna(df_auditores, 'cpf')
-            if col_cpf: df_auditores[col_cpf] = df_auditores[col_cpf].astype(str).str.strip()
-
-        dados_ok = True
-        st.sidebar.success("✅ Base Conectada (Google Cloud)")
-        
-except Exception as e:
-    st.sidebar.error(f"Erro de Conexão: {e}")
-    st.sidebar.info("Verifique se a planilha tem as abas: Base_Treinamentos, Padroes_Perguntas")
-
-# Upload Histórico (Mantido Manual por enquanto)
-st.sidebar.markdown("---")
-uploaded_hist = st.sidebar.file_uploader("Carregar Histórico (Opcional)", type=["xlsx"], key="hist", accept_multiple_files=True)
-
+# Processamento Histórico
 if uploaded_hist and not st.session_state['resultados']:
     dfs = []
     try:
@@ -96,74 +52,85 @@ if uploaded_hist and not st.session_state['resultados']:
             dfs.append(d)
         if dfs:
             st.session_state['resultados'] = pd.concat(dfs, ignore_index=True).to_dict('records')
-            st.sidebar.success(f"📦 Histórico: {len(st.session_state['resultados'])} regs")
+            st.sidebar.success(f"📦 Consolidado: {len(st.session_state['resultados'])} regs")
     except Exception as e: st.sidebar.error(f"Erro Histórico: {e}")
 
-# --- LOGIN (VIA GOOGLE SHEETS) ---
-auditor_valido = None
-if dados_ok and df_auditores is not None:
-    st.sidebar.markdown("---")
-    
-    if st.session_state['auditor_logado']:
-        user = st.session_state['auditor_logado']
-        st.sidebar.success(f"👤 {user['Nome']}")
-        if st.sidebar.button("Sair"):
-            st.session_state['auditor_logado'] = None
-            st.session_state['permissoes'] = {'filiais': [], 'padroes': [], 'perfil': ''}
-            st.rerun()
-    else:
-        st.sidebar.subheader("🔐 Login")
-        cpf_input = st.sidebar.text_input("CPF (Apenas números)", type="password")
-        if st.sidebar.button("Entrar"):
+# --- LOGIN INTELIGENTE (COM DEBUG) ---
+df_auditores = None
+
+if uploaded_file:
+    try:
+        xls = pd.ExcelFile(uploaded_file)
+        if 'Cadastro_Auditores' in xls.sheet_names:
+            df_auditores = pd.read_excel(uploaded_file, sheet_name='Cadastro_Auditores')
+            df_auditores.columns = [c.strip() for c in df_auditores.columns]
+            
             col_cpf = achar_coluna(df_auditores, 'cpf')
+            
             if col_cpf:
-                match = df_auditores[df_auditores[col_cpf]==cpf_input.strip()]
-                if not match.empty:
-                    dados = match.iloc[0]
-                    # Mapeamento
-                    c_nome = achar_coluna(df_auditores, 'nome') or col_cpf
-                    c_perf = achar_coluna(df_auditores, 'perfil')
-                    c_fil = achar_coluna(df_auditores, 'filiais')
-                    c_pad = achar_coluna(df_auditores, 'padroes')
-                    if not c_pad: c_pad = achar_coluna(df_auditores, 'padrões')
+                # LIMPEZA AGRESSIVA DE CPF (Remove .0, pontos e traços)
+                df_auditores[col_cpf] = df_auditores[col_cpf].astype(str).str.replace(r'\.0$', '', regex=True).str.replace('.', '').str.replace('-', '').str.strip()
+                
+                # Captura lista total para ranking
+                col_nome_geral = achar_coluna(df_auditores, 'nome') or col_cpf
+                if col_nome_geral:
+                    st.session_state['lista_auditores'] = df_auditores[col_nome_geral].unique().tolist()
+                
+                st.sidebar.markdown("---")
+                
+                # DEBUGGER (Para você ver o que está acontecendo)
+                with st.sidebar.expander("🕵️ DEBUG: Ver Tabela Auditores"):
+                    st.write("O sistema leu isto do Excel:")
+                    st.dataframe(df_auditores)
 
-                    nome = dados[c_nome]
-                    perfil = str(dados[c_perf]).strip() if c_perf else 'Auditor'
+                if st.session_state['auditor_logado']:
+                    user = st.session_state['auditor_logado']
+                    perms = st.session_state['permissoes']
+                    st.sidebar.success(f"👤 {user['Nome']}")
+                    st.sidebar.caption(f"Perfil: {perms['perfil']}")
                     
-                    # Filiais
-                    raw_fil = str(dados.get(c_fil, 'Todas')) if c_fil else 'Todas'
-                    if 'todas' in raw_fil.lower() or raw_fil=='nan': fils_perm = 'TODAS'
-                    else: fils_perm = [x.strip() for x in raw_fil.split(',')]
+                    if st.sidebar.button("Sair"):
+                        st.session_state['auditor_logado'] = None
+                        st.session_state['permissoes'] = {'filiais': [], 'padroes': [], 'perfil': ''}
+                        st.rerun()
+                else:
+                    st.sidebar.subheader("🔐 Login")
+                    # Limpa o input do usuário também
+                    cpf_input = st.sidebar.text_input("CPF (Apenas números)", type="password")
                     
-                    # Padrões
-                    raw_pad = str(dados.get(c_pad, 'Todos')) if c_pad else 'Todos'
-                    if 'todos' in raw_pad.lower() or raw_pad=='nan': pads_perm = 'TODOS'
-                    else: pads_perm = [x.strip() for x in raw_pad.split(',')]
+                    if st.sidebar.button("Entrar"):
+                        # Limpa o que foi digitado para garantir match
+                        cpf_clean = cpf_input.replace('.', '').replace('-', '').strip()
+                        
+                        match = df_auditores[df_auditores[col_cpf] == cpf_clean]
+                        
+                        if not match.empty:
+                            dados = match.iloc[0]
+                            c_nome = achar_coluna(df_auditores, 'nome') or col_cpf
+                            c_perf = achar_coluna(df_auditores, 'perfil')
+                            c_fil = achar_coluna(df_auditores, 'filiais')
+                            c_pad = achar_coluna(df_auditores, 'padroes') or achar_coluna(df_auditores, 'padrões')
 
-                    st.session_state['auditor_logado'] = {'Nome': nome, 'CPF': cpf_input}
-                    st.session_state['permissoes'] = {'filiais': fils_perm, 'padroes': pads_perm, 'perfil': perfil}
-                    st.rerun()
-                else: st.sidebar.error("CPF não encontrado.")
-elif dados_ok:
-    # Fallback se não tiver aba Auditores
-    st.session_state['auditor_logado'] = {'Nome': 'Geral', 'CPF': '000'}
-    st.session_state['permissoes'] = {'filiais': 'TODAS', 'padroes': 'TODOS', 'perfil': 'Gestor'}
+                            nome = dados[c_nome]
+                            perfil = str(dados[c_perf]).strip() if c_perf else 'Auditor'
+                            
+                            raw_f = str(dados.get(c_fil, 'Todas')) if c_fil else 'Todas'
+                            if 'todas' in raw_f.lower() or raw_f=='nan': fils_perm = 'TODAS'
+                            else: fils_perm = [x.strip() for x in raw_f.split(',')]
+                                
+                            raw_p = str(dados.get(c_pad, 'Todos')) if c_pad else 'Todos'
+                            if 'todos' in raw_p.lower() or raw_p=='nan': pads_perm = 'TODOS'
+                            else: pads_perm = [x.strip() for x in raw_p.split(',')]
 
-# Download
-if st.session_state['resultados']:
-    st.sidebar.markdown("---")
-    st.sidebar.write("📂 **Backup**")
-    df_dw = pd.DataFrame(st.session_state['resultados'])
-    perms = st.session_state['permissoes']
-    if st.session_state['auditor_logado'] and perms.get('perfil')!='Gestor' and perms.get('filiais')!='TODAS':
-        if 'Filial' in df_dw.columns: df_dw = df_dw[df_dw['Filial'].isin(perms['filiais'])]
-    
-    excel_data = gerar_excel(df_dw)
-    if excel_data: st.sidebar.download_button("📥 Baixar Planilha", excel_data, "Backup_Auditoria.xlsx", mime="application/vnd.ms-excel")
-
-st.sidebar.markdown("---")
-pagina = st.sidebar.radio("Menu:", ["📝 EXECUTAR DTO 01", "📊 Painel Gerencial"])
-# ================= EXECUÇÃO =================
+                            st.session_state['auditor_logado'] = {'Nome': nome, 'CPF': cpf_clean}
+                            st.session_state['permissoes'] = {'filiais': fils_perm, 'padroes': pads_perm, 'perfil': perfil}
+                            st.rerun()
+                        else: st.sidebar.error(f"CPF '{cpf_clean}' não encontrado na tabela.")
+        else:
+            st.session_state['auditor_logado'] = {'Nome': 'Geral', 'CPF': '000'}
+            st.session_state['permissoes'] = {'filiais': 'TODAS', 'padroes': 'TODOS', 'perfil': 'Gestor'}
+    except Exception as e: st.sidebar.warning(f"Erro Login: {e}")
+        # ================= EXECUÇÃO =================
 if pagina == "📝 EXECUTAR DTO 01":
     if not dados_ok: st.info("⏳ Conectando à base de dados...")
     elif df_auditores is not None and st.session_state['auditor_logado'] is None:
@@ -265,7 +232,7 @@ if pagina == "📝 EXECUTAR DTO 01":
                     st.subheader("📋 Resumo")
                     st.dataframe(pd.DataFrame(st.session_state['resultados']), use_container_width=True)
                     if st.button("🗑️ Apagar Tudo", type="primary"): st.session_state['resultados']=[]; st.rerun()
-                       # ================= PAINEL =================
+                        # ================= PAINEL =================
 elif pagina == "📊 Painel Gerencial":
     st.title("📊 Painel Gerencial")
     if not dados_ok: st.info("⏳ Conectando à base...")
@@ -415,4 +382,4 @@ elif pagina == "📊 Painel Gerencial":
             with pd.ExcelWriter(out, engine='xlsxwriter') as writer: df_res.to_excel(writer, index=False)
             b1.download_button("📥 Baixar Master", out.getvalue(), f"Master_{obter_hora().replace('/','-')}.xlsx")
         
-        if b2.button("🗑️ Limpar Tudo", key="trash_dash"): st.session_state['resultados']=[]; st.rerun() 
+        if b2.button("🗑️ Limpar Tudo", key="trash_dash"): st.session_state['resultados']=[]; st.rerun()
