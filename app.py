@@ -32,72 +32,49 @@ def achar_coluna(df, termo):
         if termo.lower() in col.lower(): return col
     return None
 
-# --- FUNÇÃO DE CACHE (Evita Erro 429) ---
-@st.cache_data(ttl=600) # Guarda na memória por 10 minutos
-def carregar_bases_estaticas():
-    try:
-        conn = st.connection("gsheets", type=GSheetsConnection)
-        df_t = conn.read(worksheet="Base_Treinamentos")
-        df_p = conn.read(worksheet="Padroes_Perguntas")
-        try: df_a = conn.read(worksheet="Cadastro_Auditores")
-        except: df_a = None
-        
-        # Limpeza
-        for df in [df_t, df_p]:
+# --- 4. BARRA LATERAL ---
+st.sidebar.header("1. Conexão")
+if os.path.exists("logo.png"): st.sidebar.image("logo.png", use_container_width=True)
+else: st.sidebar.write("🏢 DTO 01 - DCS SCANIA")
+
+# Globais
+df_treinos = pd.DataFrame()
+df_perguntas = pd.DataFrame()
+df_auditores = None
+dados_ok = False
+
+# Conexão Google
+try:
+    conn = st.connection("gsheets", type=GSheetsConnection)
+    with st.spinner('Sincronizando...'):
+        df_treinos = conn.read(worksheet="Base_Treinamentos", ttl=600)
+        df_perguntas = conn.read(worksheet="Padroes_Perguntas", ttl=600)
+        try: df_auditores = conn.read(worksheet="Cadastro_Auditores", ttl=600)
+        except: df_auditores = None
+
+        for df in [df_treinos, df_perguntas]:
             df.dropna(how='all', inplace=True)
             df.columns = [c.strip() for c in df.columns]
             for c in df.columns:
                 if c in ['CPF','Codigo_Padrao','Filial','Pergunta','Nome_Padrao']:
                     df[c] = df[c].astype(str).str.replace(r'\.0$', '', regex=True).str.strip()
         
-        if df_a is not None:
-            df_a.dropna(how='all', inplace=True)
-            df_a.columns = [c.strip() for c in df_a.columns]
-            c_cpf = achar_coluna(df_a, 'cpf')
-            if c_cpf: df_a[c_cpf] = df_a[c_cpf].astype(str).str.replace(r'\.0$', '', regex=True).str.strip()
-            
-        return df_t, df_p, df_a, True
-    except Exception as e:
-        return pd.DataFrame(), pd.DataFrame(), None, False
+        if df_auditores is not None:
+            df_auditores.dropna(how='all', inplace=True)
+            df_auditores.columns = [c.strip() for c in df_auditores.columns]
+            c_cpf_aud = achar_coluna(df_auditores, 'cpf')
+            if c_cpf_aud: 
+                df_auditores[c_cpf_aud] = df_auditores[c_cpf_aud].astype(str).str.replace(r'\.0$', '', regex=True).str.strip()
+                c_nm_g = achar_coluna(df_auditores, 'nome') or c_cpf_aud
+                st.session_state['lista_auditores'] = df_auditores[c_nm_g].unique().tolist()
+        dados_ok = True
+        st.sidebar.success("✅ Base Conectada")
+except Exception as e: st.sidebar.error(f"Erro Conexão: {e}")
 
-def carregar_respostas_nuvem():
-    try:
-        conn = st.connection("gsheets", type=GSheetsConnection)
-        return conn.read(worksheet="Respostas_DB", ttl=0) # ttl=0 para pegar dados frescos
-    except: return pd.DataFrame()
-
-# --- 4. BARRA LATERAL ---
-st.sidebar.header("1. Conexão")
-if os.path.exists("logo.png"): st.sidebar.image("logo.png", use_container_width=True)
-else: st.sidebar.write("🏢 DTO 01 - DCS SCANIA")
-
-# Carga Inicial
-df_treinos, df_perguntas, df_auditores, dados_ok = carregar_bases_estaticas()
-
-if dados_ok:
-    st.sidebar.success("✅ Base Carregada")
-    
-    # Carrega lista auditores (Ranking)
-    if not st.session_state['lista_auditores'] and df_auditores is not None:
-        c_nome = achar_coluna(df_auditores, 'nome')
-        if c_nome: st.session_state['lista_auditores'] = df_auditores[c_nome].unique().tolist()
-    
-    # Sincronia Inicial da Nuvem
-    if not st.session_state['resultados']:
-        df_cloud = carregar_respostas_nuvem()
-        if not df_cloud.empty:
-            df_cloud.columns = [c.strip() for c in df_cloud.columns]
-            for c in df_cloud.columns: df_cloud[c] = df_cloud[c].astype(str).str.strip()
-            st.session_state['resultados'] = df_cloud.to_dict('records')
-
-else:
-    st.sidebar.warning("Tentando reconectar...")
-    if st.sidebar.button("Recarregar"): st.cache_data.clear(); st.rerun()
-
-# Upload Histórico Manual
+# Histórico
 st.sidebar.markdown("---")
-uploaded_hist = st.sidebar.file_uploader("Importar Excel Local", type=["xlsx"], key="hist", accept_multiple_files=True)
-if uploaded_hist:
+uploaded_hist = st.sidebar.file_uploader("Carregar Histórico", type=["xlsx"], key="hist", accept_multiple_files=True)
+if uploaded_hist and not st.session_state['resultados']:
     dfs = []
     try:
         for f in uploaded_hist:
@@ -107,10 +84,9 @@ if uploaded_hist:
                 if c in d.columns: d[c] = d[c].astype(str).str.strip()
             dfs.append(d)
         if dfs:
-            novos = pd.concat(dfs, ignore_index=True).to_dict('records')
-            st.session_state['resultados'].extend(novos)
-            st.sidebar.success(f"Importado: {len(novos)} regs")
-    except Exception as e: st.sidebar.error(f"Erro: {e}")
+            st.session_state['resultados'] = pd.concat(dfs, ignore_index=True).to_dict('records')
+            st.sidebar.success(f"📦 Histórico: {len(st.session_state['resultados'])} regs")
+    except: pass
 
 # Login
 if dados_ok:
@@ -135,18 +111,19 @@ if dados_ok:
                         dat = match.iloc[0]
                         c_nm = achar_coluna(df_auditores, 'nome') or col_cpf
                         c_pf = achar_coluna(df_auditores, 'perfil')
-                        c_fl = achar_coluna(df_auditores, 'filiais')
-                        c_pd = achar_coluna(df_auditores, 'padroes') or achar_coluna(df_auditores, 'padrões')
-                        
+                        c_fil = achar_coluna(df_auditores, 'filiais')
+                        # CORREÇÃO DA VARIÁVEL AQUI
+                        c_pad = achar_coluna(df_auditores, 'padroes') or achar_coluna(df_auditores, 'padrões')
+
                         nome = dat[c_nm]
                         perf = str(dat[c_pf]).strip() if c_pf else 'Auditor'
                         
-                        rf = str(dat.get(c_fl, 'Todas')) if c_fl else 'Todas'
+                        rf = str(dat.get(c_fil, 'Todas')) if c_fil else 'Todas'
                         pf = 'TODAS' if 'todas' in rf.lower() or rf=='nan' else [x.strip() for x in rf.split(',')]
                         
-                        rp = str(dat.get(c_pd, 'Todos')) if c_pad else 'Todos'
+                        rp = str(dat.get(c_pad, 'Todos')) if c_pad else 'Todos'
                         pp = 'TODOS' if 'todos' in rp.lower() or rp=='nan' else [x.strip() for x in rp.split(',')]
-                        
+
                         st.session_state['auditor_logado'] = {'Nome': nome, 'CPF': cpf_cl}
                         st.session_state['permissoes'] = {'filiais': pf, 'padroes': pp, 'perfil': perf}
                         st.rerun()
@@ -155,7 +132,7 @@ if dados_ok:
         st.session_state['auditor_logado'] = {'Nome': 'Geral', 'CPF': '000'}
         st.session_state['permissoes'] = {'filiais': 'TODAS', 'padroes': 'TODOS', 'perfil': 'Gestor'}
 
-# Download Backup
+# Download
 if st.session_state['resultados']:
     st.sidebar.markdown("---")
     st.sidebar.write("📂 **Backup**")
@@ -165,39 +142,42 @@ if st.session_state['resultados']:
         if 'Filial' in df_dw.columns: df_dw = df_dw[df_dw['Filial'].isin(perms['filiais'])]
     
     excel_data = gerar_excel(df_dw)
-    if excel_data: st.sidebar.download_button("📥 Baixar Planilha", excel_data, "Backup.xlsx", mime="application/vnd.ms-excel")
+    if excel_data: st.sidebar.download_button("📥 Baixar Planilha", excel_data, "Backup_Auditoria.xlsx", mime="application/vnd.ms-excel")
 
 st.sidebar.markdown("---")
 pagina = st.sidebar.radio("Menu:", ["📝 EXECUTAR DTO 01", "📊 Painel Gerencial"])
 # ================= EXECUÇÃO =================
 if pagina == "📝 EXECUTAR DTO 01":
-    if not dados_ok: st.info("⏳ Carregando...")
+    if not dados_ok: st.info("⏳ Aguardando dados...")
     elif df_auditores is not None and st.session_state['auditor_logado'] is None:
-        st.warning("🔒 Acesso Bloqueado. Faça login.")
+        st.warning("🔒 Acesso Bloqueado. Faça login na barra lateral.")
     else:
         st.title("📝 EXECUTAR DTO 01")
         perms = st.session_state['permissoes']
         st.sidebar.header("Filtros Execução")
         
         t_fil = sorted(df_treinos['Filial'].dropna().unique())
-        opts_f = t_fil if perms['filiais'] == 'TODAS' else sorted([f for f in t_fil if f in perms['filiais']])
-        sel_fil = st.sidebar.multiselect("Filiais", opts_f, default=opts_f if len(opts_f)==1 else None)
+        if perms['filiais'] == 'TODAS': opts_f = t_fil
+        else: opts_f = sorted([f for f in t_fil if f in perms['filiais']])
+        sel_fil = st.sidebar.multiselect("Selecione Filiais", opts_f, default=opts_f if len(opts_f)==1 else None)
         
         t_pad = sorted(df_perguntas['Codigo_Padrao'].dropna().unique())
-        opts_p = t_pad if perms['padroes'] == 'TODOS' else sorted([p for p in t_pad if str(p) in perms['padroes']])
-        sel_pad = list(opts_p) if st.sidebar.checkbox("Todos Padrões", key="pe") else st.sidebar.multiselect("Padrões", opts_p)
+        if perms['padroes'] == 'TODOS': opts_p = t_pad
+        else: opts_p = sorted([p for p in t_pad if str(p) in perms['padroes']])
+        sel_pad = list(opts_p) if st.sidebar.checkbox("Todos Meus Padrões", key="pe") else st.sidebar.multiselect("Padrões", opts_p)
 
         if sel_fil and sel_pad:
             df_m = df_treinos[(df_treinos['Filial'].isin(sel_fil)) & (df_treinos['Codigo_Padrao'].isin(sel_pad))]
             
             if df_m.empty: st.warning("Sem dados.")
             else:
-                mapa_nomes = {}
+                m_nom = {}
                 if 'Nome_Padrao' in df_perguntas.columns:
                     tn = df_perguntas[['Codigo_Padrao', 'Nome_Padrao']].drop_duplicates()
-                    mapa_nomes = pd.Series(tn.Nome_Padrao.values, index=tn.Codigo_Padrao).to_dict()
+                    m_nom = pd.Series(tn.Nome_Padrao.values, index=tn.Codigo_Padrao.astype(str).str.strip()).to_dict()
                 
-                meta_dict = df_perguntas.groupby('Codigo_Padrao').size().to_dict()
+                dict_metas = df_perguntas.groupby('Codigo_Padrao').size().to_dict()
+
                 rank = df_m.groupby(['CPF','Nome_Funcionario','Filial']).size().reset_index(name='Qtd')
                 rank = rank.sort_values(by=['Qtd','Filial'], ascending=[False,True])
                 
@@ -212,32 +192,34 @@ if pagina == "📝 EXECUTAR DTO 01":
                 
                 for _, row in pg_rank.iterrows():
                     cpf, nome, fil = str(row['CPF']).strip(), row['Nome_Funcionario'], row['Filial']
-                    qtd_pads = row['Qtd']
+                    q_pd = row['Qtd']
                     
-                    pads_nf = df_m[df_m['CPF'].astype(str).str.strip() == cpf]['Codigo_Padrao'].unique()
-                    pads_nf = [str(p).strip() for p in pads_nf]
-                    m_tot = sum(meta_dict.get(p,0) for p in pads_nf)
+                    p_nf = df_m[df_m['CPF'].astype(str).str.strip() == cpf]['Codigo_Padrao'].unique()
+                    p_nf = [str(p).strip() for p in p_nf]
+                    m_tot = sum(dict_metas.get(p,0) for p in p_nf)
+                    
                     r_tot = 0
                     for r in st.session_state['resultados']:
-                        if str(r.get('CPF','')).strip() == cpf and str(r.get('Padrao','')).strip() in pads_nf: r_tot += 1
+                        if str(r.get('CPF','')).strip() == cpf and str(r.get('Padrao','')).strip() in p_nf: r_tot += 1
                     
                     if r_tot == 0: icon = "⚪"
                     elif r_tot >= m_tot and m_tot > 0: icon = "🟢"
                     else: icon = "🟡"
                     
-                    with st.expander(f"{icon} {nome} | {fil} ({qtd_pads} Padrões | {r_tot}/{m_tot})"):
+                    with st.expander(f"{icon} {nome} | {fil} ({q_pd} Padrões | {r_tot}/{m_tot})"):
                         with st.form(key=f"f_{cpf}"):
                             c_top, _ = st.columns([1, 4])
                             s_top = c_top.form_submit_button("💾 Salvar na Nuvem", key=f"t_{cpf}")
                             st.markdown("---")
                             resps, obss = {}, {}
-                            pads_orig = df_m[df_m['CPF'].astype(str).str.strip() == cpf]['Codigo_Padrao'].unique()
-                            for p in pads_orig:
-                                st.markdown(f"**{p} - {mapa_nomes.get(str(p).strip(), '')}**")
-                                pergs = df_perguntas[df_perguntas['Codigo_Padrao'].astype(str).str.strip() == str(p).strip()]
+                            p_orig = df_m[df_m['CPF'].astype(str).str.strip() == cpf]['Codigo_Padrao'].unique()
+                            for p in p_orig:
+                                p_str = str(p).strip()
+                                st.markdown(f"**{p_str} - {m_nom.get(p_str, '')}**")
+                                pergs = df_perguntas[df_perguntas['Codigo_Padrao'].astype(str).str.strip() == p_str]
                                 for idx, pr in pergs.iterrows():
-                                    txt, k_wd = pr['Pergunta'], f"{cpf}_{p}_{idx}"
-                                    prev = mem.get(f"{cpf}_{p}_{txt}")
+                                    txt, k_wd = pr['Pergunta'], f"{cpf}_{p_str}_{idx}"
+                                    prev = mem.get(f"{cpf}_{p_str}_{txt}")
                                     ir = ["Conforme","Não Conforme","Não se Aplica"].index(prev['res']) if prev and prev['res'] in ["Conforme","Não Conforme","Não se Aplica"] else None
                                     st.write(txt)
                                     resps[k_wd] = st.radio("R", ["Conforme", "Não Conforme", "Não se Aplica"], key=k_wd, horizontal=True, index=ir, label_visibility="collapsed")
@@ -253,9 +235,8 @@ if pagina == "📝 EXECUTAR DTO 01":
                                         _, pr, ir = k.split('_', 2)
                                         try: pt = df_perguntas.loc[int(ir), 'Pergunta']
                                         except: pt = "Erro"
-                                        # Remove da memória local
-                                        st.session_state['resultados'] = [r for r in st.session_state['resultados'] if not (str(r.get('CPF','')).strip()==cpf and str(r.get('Padrao','')).strip()==str(pr).strip() and str(r.get('Pergunta','')).strip()==pt)]
-                                        reg = {"Data":dh, "Filial":fil, "Funcionario":nome, "CPF":cpf, "Padrao":str(pr).strip(), "Pergunta":pt, "Resultado":v, "Observacao":obss.get(k,"")}
+                                        st.session_state['resultados'] = [r for r in st.session_state['resultados'] if not (str(r.get('CPF','')).strip()==cpf and str(r.get('Padrao','')).strip()==pr and str(r.get('Pergunta','')).strip()==pt)]
+                                        reg = {"Data":dh, "Filial":fil, "Funcionario":nome, "CPF":cpf, "Padrao":pr, "Pergunta":pt, "Resultado":v, "Observacao":obss.get(k,"")}
                                         if st.session_state['auditor_logado']: reg.update({"Auditor_Nome":st.session_state['auditor_logado']['Nome'], "Auditor_CPF":st.session_state['auditor_logado']['CPF']})
                                         st.session_state['resultados'].append(reg)
                                         novos.append(reg)
@@ -268,8 +249,9 @@ if pagina == "📝 EXECUTAR DTO 01":
                                         st.success("Salvo na Nuvem!"); st.rerun()
                                     except Exception as e: st.error(f"Erro Nuvem: {e}")
                 
+                st.markdown("---")
                 if st.session_state['resultados']:
-                    st.markdown("---"); st.subheader("📋 Resumo")
+                    st.subheader("📋 Resumo")
                     st.dataframe(pd.DataFrame(st.session_state['resultados']), use_container_width=True)
                     # ================= PAINEL =================
 elif pagina == "📊 Painel Gerencial":
@@ -280,27 +262,34 @@ elif pagina == "📊 Painel Gerencial":
         perms = st.session_state['permissoes']
         with st.expander("🔍 Raio-X", expanded=False):
             colisao = df_treinos.groupby('CPF')['Nome_Funcionario'].nunique()
-            if not colisao[colisao > 1].empty: st.error(f"Duplicados: {len(colisao[colisao > 1])}")
+            errados = colisao[colisao > 1]
+            if not errados.empty: st.error(f"CPFs Duplicados: {len(errados)}")
             else: st.success("Base OK.")
 
         st.sidebar.header("Filtros Dashboard")
         todas_f = sorted(df_treinos['Filial'].unique())
-        opts_f = todas_f if perms['filiais'] == 'TODAS' else sorted([f for f in todas_f if f in perms['filiais']])
+        if perms['filiais'] == 'TODAS': opts_f = todas_f
+        else: opts_f = sorted([f for f in todas_f if f in perms['filiais']])
         f_sel = st.sidebar.multiselect("Filiais", opts_f, default=opts_f)
         
         todas_p = sorted(df_perguntas['Codigo_Padrao'].unique())
-        opts_p = todas_p if perms['padroes'] == 'TODOS' else sorted([p for p in todas_p if str(p) in perms['padroes']])
+        if perms['padroes'] == 'TODOS': opts_p = todas_p
+        else: opts_p = sorted([p for p in todas_p if str(p) in perms['padroes']])
         p_sel = st.sidebar.multiselect("Padrões", opts_p, default=opts_p)
         
         st.markdown("---")
+        
         df_esc = df_treinos[(df_treinos['Filial'].isin(f_sel)) & (df_treinos['Codigo_Padrao'].isin(p_sel))]
+        
         df_res = pd.DataFrame(st.session_state['resultados'])
         df_rf = pd.DataFrame()
         if not df_res.empty:
             if 'Filial' in df_res.columns and 'Padrao' in df_res.columns:
                 df_rf = df_res[(df_res['Filial'].isin(f_sel)) & (df_res['Padrao'].isin(p_sel))]
+        
         metas = df_perguntas.groupby('Codigo_Padrao').size().to_dict()
 
+        # PERFORMANCE AUDITOR
         if perms.get('perfil') == 'Gestor' and df_auditores is not None:
             st.subheader("🏆 Performance Operacional")
             try:
@@ -326,8 +315,8 @@ elif pagina == "📊 Painel Gerencial":
                     rp = str(da.get(cp, 'Todos')) if cp else 'Todos'
                     lp = list(df_perguntas['Codigo_Padrao'].unique()) if 'todos' in rp.lower() else [x.strip() for x in rp.split(',')]
                     
-                    df_u = df_treinos[(df_treinos['Filial'].isin(lf)) & (df_treinos['Codigo_Padrao'].isin(lp))]
-                    m_aud = sum(metas.get(str(r['Codigo_Padrao']),0) for _, r in df_u.iterrows())
+                    df_uni = df_treinos[(df_treinos['Filial'].isin(lf)) & (df_treinos['Codigo_Padrao'].isin(lp))]
+                    m_aud = sum(metas.get(str(r['Codigo_Padrao']),0) for _, r in df_uni.iterrows())
                     r_aud = len(df_rf[df_rf['Auditor_Nome'] == nm]) if not df_rf.empty and 'Auditor_Nome' in df_rf.columns else 0
                     
                     pend = max(0, m_aud - r_aud)
@@ -337,7 +326,7 @@ elif pagina == "📊 Painel Gerencial":
             except: pass
             st.markdown("---")
 
-        st.write("Visão:")
+        st.write("Visualização:")
         visao = st.radio("V", ["👥 Pessoas", "📏 Padrões"], horizontal=True, label_visibility="collapsed")
         st.markdown("---")
 
@@ -351,26 +340,25 @@ elif pagina == "📊 Painel Gerencial":
                 pads = df_esc[df_esc['CPF']==cpf]['Codigo_Padrao'].unique()
                 mt = sum(metas.get(p,0) for p in pads)
                 rl = resps.get(cpf, 0)
-                if rl == 0: stt="🔴"; cnt['P']+=1
-                elif rl >= mt and mt>0: stt="🟢"; cnt['C']+=1
-                else: stt="🟡"; cnt['A']+=1
+                if rl == 0: stt="🔴 Pendente"; cnt['P']+=1
+                elif rl >= mt and mt>0: stt="🟢 Concluído"; cnt['C']+=1
+                else: stt="🟡 Parcial"; cnt['A']+=1
                 inf = df_esc[df_esc['CPF']==cpf].iloc[0]
                 pct = int((rl/mt)*100) if mt>0 else 0
                 d_list.append({"Filial":inf['Filial'], "Nome":inf['Nome_Funcionario'], "Status":stt, "Prog":f"{rl}/{mt} ({pct}%)"})
-            
             c1,c2,c3,c4 = st.columns(4)
             c1.metric("Pessoas", total)
             c2.metric("Concluídos", cnt['C'])
             c3.metric("Parcial", cnt['A'])
             c4.metric("Pendentes", cnt['P'])
             st.progress(cnt['C']/total if total else 0)
-            
             df_d = pd.DataFrame(d_list)
             if not df_d.empty:
-                t1,t2,t3 = st.tabs(["🔴","🟡","🟢"])
-                with t1: st.dataframe(df_d[df_d['Status']=="🔴"], use_container_width=True)
-                with t2: st.dataframe(df_d[df_d['Status']=="🟡"], use_container_width=True)
-                with t3: st.dataframe(df_d[df_d['Status']=="🟢"], use_container_width=True)
+                t1,t2,t3 = st.tabs(["🔴 Pendentes","🟡 Parciais","🟢 Concluídos"])
+                with t1: st.dataframe(df_d[df_d['Status'].str.contains("Pendente")], use_container_width=True)
+                with t2: st.dataframe(df_d[df_d['Status'].str.contains("Parcial")], use_container_width=True)
+                with t3: st.dataframe(df_d[df_d['Status'].str.contains("Concluído")], use_container_width=True)
+                st.download_button("📥 Baixar Status", gerar_excel(df_d), "Status_Pessoas.xlsx")
 
         else:
             tot_v = len(df_esc) 
@@ -400,20 +388,23 @@ elif pagina == "📊 Painel Gerencial":
                 v_data.append({"Padrão":p, "Desc":m_nom.get(p,p), "Vol":qm, "Ok":qo, "%":f"{pct}%"})
 
             c1,c2,c3,c4 = st.columns(4)
-            c1.metric("Volume", tot_v)
-            c2.metric("Concluídos", cnt_v['C'])
+            c1.metric("Volume Total", tot_v)
+            c2.metric("Concluídas", cnt_v['C'])
             c3.metric("Andamento", cnt_v['I'])
             c4.metric("Zero", cnt_v['Z'])
             st.progress(cnt_v['C']/tot_v if tot_v else 0)
-            st.dataframe(pd.DataFrame(v_data), use_container_width=True)
+            df_v = pd.DataFrame(v_data)
+            st.dataframe(df_v, use_container_width=True)
+            if not df_v.empty: st.download_button("📥 Baixar Volumetria", gerar_excel(df_v), "Status_Volume.xlsx")
 
         st.markdown("---")
+        b1,b2 = st.columns([3,1])
         if not df_res.empty:
             out = BytesIO()
             with pd.ExcelWriter(out, engine='xlsxwriter') as writer: df_res.to_excel(writer, index=False)
-            st.download_button("📥 Baixar Master", out.getvalue(), f"Master.xlsx")
+            b1.download_button("📥 Baixar Master", out.getvalue(), f"Master_{obter_hora().replace('/','-')}.xlsx")
         
-        if st.button("🗑️ Limpar Tudo", key="trash_dash"):
+        if b2.button("🗑️ Limpar Tudo", key="trash_dash"):
             try:
                 conn = st.connection("gsheets", type=GSheetsConnection)
                 conn.update(worksheet="Respostas_DB", data=pd.DataFrame(columns=['Data']))
