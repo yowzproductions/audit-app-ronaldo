@@ -32,9 +32,9 @@ def achar_coluna(df, termo):
         if termo.lower() in col.lower(): return col
     return None
 
-# --- CACHE DE DADOS ESTATICOS (10 min) ---
-@st.cache_data(ttl=600, show_spinner="Carregando bases...")
-def carregar_bases():
+# --- CACHE INTELIGENTE ---
+@st.cache_data(ttl=600, show_spinner="Lendo Bases...")
+def carregar_bases_estaticas():
     try:
         conn = st.connection("gsheets", type=GSheetsConnection)
         df_t = conn.read(worksheet="Base_Treinamentos")
@@ -42,7 +42,6 @@ def carregar_bases():
         try: df_a = conn.read(worksheet="Cadastro_Auditores")
         except: df_a = None
         
-        # Limpeza
         for df in [df_t, df_p]:
             df.dropna(how='all', inplace=True)
             df.columns = [c.strip() for c in df.columns]
@@ -57,10 +56,10 @@ def carregar_bases():
             if c_cpf: df_a[c_cpf] = df_a[c_cpf].astype(str).str.replace(r'\.0$', '', regex=True).str.strip()
             
         return df_t, df_p, df_a, True
-    except: return pd.DataFrame(), pd.DataFrame(), None, False
+    except Exception as e:
+        return pd.DataFrame(), pd.DataFrame(), None, False
 
-# --- LEITURA NUVEM (CACHE CURTO 5s) ---
-def ler_nuvem():
+def carregar_respostas_nuvem():
     try:
         conn = st.connection("gsheets", type=GSheetsConnection)
         return conn.read(worksheet="Respostas_DB", ttl=5)
@@ -72,27 +71,46 @@ if os.path.exists("logo.png"): st.sidebar.image("logo.png", use_container_width=
 else: st.sidebar.write("🏢 DTO 01 - DCS SCANIA")
 
 # Carga Inicial
-df_treinos, df_perguntas, df_auditores, dados_ok = carregar_bases()
+df_treinos, df_perguntas, df_auditores, dados_ok = carregar_bases_estaticas()
 
 if dados_ok:
-    st.sidebar.success("✅ Conectado")
-    # Lista Auditores (Ranking)
+    st.sidebar.success("✅ Base Carregada")
     if not st.session_state['lista_auditores'] and df_auditores is not None:
         c_nome = achar_coluna(df_auditores, 'nome')
         if c_nome: st.session_state['lista_auditores'] = df_auditores[c_nome].unique().tolist()
     
-    # Sincronia Nuvem
     if not st.session_state['resultados']:
-        df_cloud = ler_nuvem()
+        df_cloud = carregar_respostas_nuvem()
         if not df_cloud.empty:
             df_cloud.columns = [c.strip() for c in df_cloud.columns]
             for c in df_cloud.columns: df_cloud[c] = df_cloud[c].astype(str).str.strip()
             st.session_state['resultados'] = df_cloud.to_dict('records')
-else:
-    st.sidebar.warning("Reconectando...")
-    if st.sidebar.button("Recarregar"): st.cache_data.clear(); st.rerun()
 
-# Login
+else:
+    st.sidebar.warning("Tentando reconectar...")
+    if st.sidebar.button("Forçar Recarga"): 
+        st.cache_data.clear()
+        st.rerun()
+
+# Upload Histórico Manual
+st.sidebar.markdown("---")
+uploaded_hist = st.sidebar.file_uploader("Importar Excel Local", type=["xlsx"], key="hist", accept_multiple_files=True)
+if uploaded_hist:
+    dfs = []
+    try:
+        for f in uploaded_hist:
+            d = pd.read_excel(f)
+            d.columns = [c.strip() for c in d.columns]
+            for c in ['CPF','Padrao','Pergunta','Auditor_CPF','Filial']:
+                if c in d.columns: d[c] = d[c].astype(str).str.strip()
+            dfs.append(d)
+        if dfs:
+            novos = pd.concat(dfs, ignore_index=True).to_dict('records')
+            st.session_state['resultados'].extend(novos)
+            st.sidebar.success(f"Importado: {len(novos)} regs")
+    except Exception as e: st.sidebar.error(f"Erro: {e}")
+
+# Login (Com variáveis corrigidas)
 if dados_ok:
     if df_auditores is not None:
         col_cpf = achar_coluna(df_auditores, 'cpf')
@@ -101,7 +119,6 @@ if dados_ok:
             if st.session_state['auditor_logado']:
                 user = st.session_state['auditor_logado']
                 st.sidebar.success(f"👤 {user['Nome']}")
-                st.sidebar.caption(f"Perfil: {st.session_state['permissoes']['perfil']}")
                 if st.sidebar.button("Sair"):
                     st.session_state['auditor_logado'] = None
                     st.session_state['permissoes'] = {'filiais': [], 'padroes': [], 'perfil': ''}
@@ -114,29 +131,42 @@ if dados_ok:
                     match = df_auditores[df_auditores[col_cpf]==cpf_cl]
                     if not match.empty:
                         dat = match.iloc[0]
-                        c_nm = achar_coluna(df_auditores, 'nome') or col_cpf
-                        c_pf = achar_coluna(df_auditores, 'perfil')
-                        c_fl = achar_coluna(df_auditores, 'filiais')
-                        c_pad = achar_coluna(df_auditores, 'padroes') or achar_coluna(df_auditores, 'padrões')
+                        # Nomes completos das variáveis para não ter erro
+                        col_nome = achar_coluna(df_auditores, 'nome') or col_cpf
+                        col_perfil = achar_coluna(df_auditores, 'perfil')
+                        col_filiais = achar_coluna(df_auditores, 'filiais')
+                        col_padroes = achar_coluna(df_auditores, 'padroes') or achar_coluna(df_auditores, 'padrões')
 
-                        nome = dat[c_nm]
-                        perf = str(dat[c_pf]).strip() if c_pf else 'Auditor'
+                        nome = dat[col_nome]
+                        perfil = str(dat[col_perfil]).strip() if col_perfil else 'Auditor'
                         
-                        rf = str(dat.get(c_fl, 'Todas')) if c_fil else 'Todas'
-                        if 'todas' in rf.lower() or rf=='nan': fils_perm = 'TODAS'
-                        else: fils_perm = [x.strip() for x in rf.split(',')]
+                        raw_f = str(dat.get(col_filiais, 'Todas')) if col_filiais else 'Todas'
+                        if 'todas' in raw_f.lower() or raw_f=='nan': fils_perm = 'TODAS'
+                        else: fils_perm = [x.strip() for x in raw_f.split(',')]
                             
-                        rp = str(dat.get(c_pad, 'Todos')) if c_pad else 'Todos'
-                        if 'todos' in rp.lower() or rp=='nan': pads_perm = 'TODOS'
-                        else: pads_perm = [x.strip() for x in rp.split(',')]
+                        raw_p = str(dat.get(col_padroes, 'Todos')) if col_padroes else 'Todos'
+                        if 'todos' in raw_p.lower() or raw_p=='nan': pads_perm = 'TODOS'
+                        else: pads_perm = [x.strip() for x in raw_p.split(',')]
 
                         st.session_state['auditor_logado'] = {'Nome': nome, 'CPF': cpf_cl}
-                        st.session_state['permissoes'] = {'filiais': fils_perm, 'padroes': pads_perm, 'perfil': perf}
+                        st.session_state['permissoes'] = {'filiais': fils_perm, 'padroes': pads_perm, 'perfil': perfil}
                         st.rerun()
                     else: st.sidebar.error("CPF não encontrado.")
     else:
         st.session_state['auditor_logado'] = {'Nome': 'Geral', 'CPF': '000'}
         st.session_state['permissoes'] = {'filiais': 'TODAS', 'padroes': 'TODOS', 'perfil': 'Gestor'}
+
+# Download
+if st.session_state['resultados']:
+    st.sidebar.markdown("---")
+    st.sidebar.write("📂 **Backup**")
+    df_dw = pd.DataFrame(st.session_state['resultados'])
+    perms = st.session_state['permissoes']
+    if st.session_state['auditor_logado'] and perms.get('perfil')!='Gestor' and perms.get('filiais')!='TODAS':
+        if 'Filial' in df_dw.columns: df_dw = df_dw[df_dw['Filial'].isin(perms['filiais'])]
+    
+    excel_data = gerar_excel(df_dw)
+    if excel_data: st.sidebar.download_button("📥 Baixar Planilha", excel_data, "Backup_Auditoria.xlsx", mime="application/vnd.ms-excel")
 
 st.sidebar.markdown("---")
 pagina = st.sidebar.radio("Menu:", ["📝 EXECUTAR DTO 01", "📊 Painel Gerencial"])
@@ -144,13 +174,13 @@ pagina = st.sidebar.radio("Menu:", ["📝 EXECUTAR DTO 01", "📊 Painel Gerenci
 if pagina == "📝 EXECUTAR DTO 01":
     if not dados_ok: st.info("⏳ Aguardando dados...")
     elif df_auditores is not None and st.session_state['auditor_logado'] is None:
-        st.warning("🔒 Acesso Bloqueado. Faça login.")
+        st.warning("🔒 Acesso Bloqueado. Faça login na barra lateral.")
     else:
         st.title("📝 EXECUTAR DTO 01")
         perms = st.session_state['permissoes']
         st.sidebar.header("Filtros Execução")
         
-        # Filtros com Segurança
+        # Filtros Blindados
         todas_f = sorted(df_treinos['Filial'].dropna().unique())
         if perms['filiais'] == 'TODAS': opts_f = todas_f
         else: opts_f = sorted([f for f in todas_f if f in perms['filiais']])
@@ -176,7 +206,6 @@ if pagina == "📝 EXECUTAR DTO 01":
                 rank = df_m.groupby(['CPF','Nome_Funcionario','Filial']).size().reset_index(name='Qtd')
                 rank = rank.sort_values(by=['Qtd','Filial'], ascending=[False,True])
                 
-                # Paginação
                 tot_p = (len(rank)-1)//10 + 1
                 c1,c2,c3 = st.columns([1,3,1])
                 if c1.button("⬅️") and st.session_state['pagina_atual']>0: st.session_state['pagina_atual']-=1; st.rerun()
@@ -184,29 +213,25 @@ if pagina == "📝 EXECUTAR DTO 01":
                 c2.markdown(f"<div style='text-align:center'>Pág {st.session_state['pagina_atual']+1}/{tot_p}</div>", unsafe_allow_html=True)
                 
                 pg_rank = rank.iloc[st.session_state['pagina_atual']*10 : (st.session_state['pagina_atual']+1)*10]
-                
-                # Memória Rápida (Carregada da Nuvem)
-                mem = {}
-                for r in st.session_state['resultados']:
-                    k = f"{str(r.get('CPF','')).strip()}_{str(r.get('Padrao','')).strip()}_{str(r.get('Pergunta','')).strip()}"
-                    mem[k] = {'res': r.get('Resultado'), 'obs': r.get('Observacao')}
+                mem = {f"{str(r.get('CPF','')).strip()}_{str(r.get('Padrao','')).strip()}_{str(r.get('Pergunta','')).strip()}": {'res':r.get('Resultado'),'obs':r.get('Observacao')} for r in st.session_state['resultados']}
                 
                 for _, row in pg_rank.iterrows():
                     cpf, nome, fil = str(row['CPF']).strip(), row['Nome_Funcionario'], row['Filial']
                     qtd_pads = row['Qtd']
                     
-                    pads_nf = df_m[df_m['CPF'].astype(str).str.strip() == cpf]['Codigo_Padrao'].unique()
-                    pads_nf = [str(p).strip() for p in pads_nf]
-                    m_tot = sum(dict_metas.get(p,0) for p in pads_nf)
-                    r_tot = 0
-                    for r in st.session_state['resultados']:
-                        if str(r.get('CPF','')).strip() == cpf and str(r.get('Padrao','')).strip() in pads_nf: r_tot += 1
+                    pads_no_filtro = df_m[df_m['CPF'].astype(str).str.strip() == cpf]['Codigo_Padrao'].unique()
+                    pads_no_filtro = [str(p).strip() for p in pads_no_filtro]
+                    meta_total = sum(dict_metas.get(p,0) for p in pads_no_filtro)
                     
-                    if r_tot == 0: icon = "⚪"
-                    elif r_tot >= m_tot and m_tot > 0: icon = "🟢"
+                    resp_tot = 0
+                    for r in st.session_state['resultados']:
+                        if str(r.get('CPF','')).strip() == cpf and str(r.get('Padrao','')).strip() in pads_no_filtro: resp_tot += 1
+                    
+                    if resp_tot == 0: icon = "⚪"
+                    elif resp_tot >= meta_total and meta_total > 0: icon = "🟢"
                     else: icon = "🟡"
                     
-                    with st.expander(f"{icon} {nome} | {fil} ({qtd_pads} Padrões | {r_tot}/{m_tot})"):
+                    with st.expander(f"{icon} {nome} | {fil} ({qtd_pads} Padrões | {resp_tot}/{meta_total})"):
                         with st.form(key=f"f_{cpf}"):
                             c_top, _ = st.columns([1, 4])
                             s_top = c_top.form_submit_button("💾 Salvar na Nuvem", key=f"t_{cpf}")
@@ -215,7 +240,8 @@ if pagina == "📝 EXECUTAR DTO 01":
                             pads_orig = df_m[df_m['CPF'].astype(str).str.strip() == cpf]['Codigo_Padrao'].unique()
                             for p in pads_orig:
                                 p_str = str(p).strip()
-                                st.markdown(f"**{p_str} - {mapa_nomes.get(p_str, '')}**")
+                                n_p = mapa_nomes.get(p_str, "")
+                                st.markdown(f"**{p_str} - {n_p}**")
                                 pergs = df_perguntas[df_perguntas['Codigo_Padrao'].astype(str).str.strip() == p_str]
                                 for idx, pr in pergs.iterrows():
                                     txt, k_wd = pr['Pergunta'], f"{cpf}_{p_str}_{idx}"
@@ -235,10 +261,7 @@ if pagina == "📝 EXECUTAR DTO 01":
                                         _, pr, ir = k.split('_', 2)
                                         try: pt = df_perguntas.loc[int(ir), 'Pergunta']
                                         except: pt = "Erro"
-                                        
-                                        # Remove anterior Local
-                                        st.session_state['resultados'] = [r for r in st.session_state['resultados'] if not (str(r.get('CPF','')).strip()==cpf and str(r.get('Padrao','')).strip()==str(pr).strip() and str(r.get('Pergunta','')).strip()==pt)]
-                                        
+                                        st.session_state['resultados'] = [r for r in st.session_state['resultados'] if not (str(r.get('CPF','')).strip()==cpf and str(r.get('Padrao','')).strip()==pr and str(r.get('Pergunta','')).strip()==pt)]
                                         reg = {"Data":dh, "Filial":fil, "Funcionario":nome, "CPF":cpf, "Padrao":str(pr).strip(), "Pergunta":pt, "Resultado":v, "Observacao":obss.get(k,"")}
                                         if st.session_state['auditor_logado']: reg.update({"Auditor_Nome":st.session_state['auditor_logado']['Nome'], "Auditor_CPF":st.session_state['auditor_logado']['CPF']})
                                         st.session_state['resultados'].append(reg)
@@ -247,15 +270,12 @@ if pagina == "📝 EXECUTAR DTO 01":
                                 if novos:
                                     try:
                                         conn = st.connection("gsheets", type=GSheetsConnection)
-                                        # Ler Nuvem Fresca
                                         df_n = conn.read(worksheet="Respostas_DB", ttl=0)
                                         if df_n.empty: df_final = pd.DataFrame(novos)
                                         else:
                                             df_n.columns = [c.strip() for c in df_n.columns]
                                             for c in ['CPF', 'Padrao', 'Pergunta']: 
                                                 if c in df_n.columns: df_n[c] = df_n[c].astype(str).str.replace(r'\.0$', '', regex=True).str.strip()
-                                            
-                                            # Concatena e Dedup
                                             df_novos = pd.DataFrame(novos)
                                             df_n['key'] = df_n['CPF']+df_n['Padrao']+df_n['Pergunta']
                                             df_novos['key'] = df_novos['CPF']+df_novos['Padrao']+df_novos['Pergunta']
@@ -265,14 +285,19 @@ if pagina == "📝 EXECUTAR DTO 01":
                                         conn.update(worksheet="Respostas_DB", data=df_final)
                                         st.success("Salvo na Nuvem!"); st.rerun()
                                     except Exception as e: st.error(f"Erro Nuvem: {e}")
-                                        # ================= PAINEL =================
+                
+                st.markdown("---")
+                if st.session_state['resultados']:
+                    st.subheader("📋 Resumo")
+                    st.dataframe(pd.DataFrame(st.session_state['resultados']), use_container_width=True)
+                    # ================= PAINEL =================
 elif pagina == "📊 Painel Gerencial":
     st.title("📊 Painel Gerencial")
     if not dados_ok: st.info("👈 Carregue a Base.")
     elif df_auditores is not None and st.session_state['auditor_logado'] is None: st.warning("🔒 Faça Login.")
     else:
         perms = st.session_state['permissoes']
-        with st.expander("🔍 Diagnóstico", expanded=False):
+        with st.expander("🔍 Raio-X", expanded=False):
             colisao = df_treinos.groupby('CPF')['Nome_Funcionario'].nunique()
             errados = colisao[colisao > 1]
             if not errados.empty: st.error(f"CPFs Duplicados: {len(errados)}")
@@ -299,7 +324,6 @@ elif pagina == "📊 Painel Gerencial":
                 df_rf = df_res[(df_res['Filial'].isin(f_sel)) & (df_res['Padrao'].isin(p_sel))]
         metas = df_perguntas.groupby('Codigo_Padrao').size().to_dict()
 
-        # --- GESTOR ---
         if perms.get('perfil') == 'Gestor' and df_auditores is not None:
             st.subheader("🏆 Performance Operacional")
             try:
@@ -308,13 +332,14 @@ elif pagina == "📊 Painel Gerencial":
                 if not l_auds:
                      cn = achar_coluna(df_auditores, 'nome')
                      if cn: l_auds = df_auditores[cn].unique().tolist()
-                
+
                 for nm in l_auds:
                     da = pd.Series()
                     cn = achar_coluna(df_auditores, 'nome')
                     if cn:
                         m = df_auditores[df_auditores[cn] == nm]
                         if not m.empty: da = m.iloc[0]
+                    
                     pa = achar_coluna(df_auditores, 'perfil')
                     if pa and 'gestor' in str(da.get(pa, '')).lower(): continue
 
@@ -325,20 +350,20 @@ elif pagina == "📊 Painel Gerencial":
                     lp = list(df_perguntas['Codigo_Padrao'].unique()) if 'todos' in rp.lower() else [x.strip() for x in rp.split(',')]
                     
                     df_uni = df_treinos[(df_treinos['Filial'].isin(lf)) & (df_treinos['Codigo_Padrao'].isin(lp))]
-                    m_aud = sum(metas.get(str(r['Codigo_Padrao']),0) for _, r in df_uni.iterrows())
+                    meta_aud = sum(metas.get(str(r['Codigo_Padrao']),0) for _, r in df_uni.iterrows())
                     r_aud = len(df_rf[df_rf['Auditor_Nome'] == nm]) if not df_rf.empty and 'Auditor_Nome' in df_rf.columns else 0
-                    pend = max(0, m_aud - r_aud)
-                    pct = int((r_aud/m_aud)*100) if m_aud > 0 else 0
-                    tbl_perf.append({"Auditor": nm, "Meta": m_aud, "Realizado": r_aud, "Pendente": pend, "%": f"{pct}%"})
-                st.dataframe(pd.DataFrame(tbl_perf).sort_values(by="Realizado", ascending=False), use_container_width=True)
+                    pend = max(0, meta_aud - r_aud)
+                    pct = int((r_aud/meta_aud)*100) if meta_aud > 0 else 0
+                    tbl_perf.append({"Auditor": nm, "Meta": meta_aud, "Real": r_aud, "Pend": pend, "%": f"{pct}%"})
+                st.dataframe(pd.DataFrame(tbl_perf).sort_values(by="Real", ascending=False), use_container_width=True)
             except: pass
             st.markdown("---")
 
         st.write("Visualização:")
-        visao = st.radio("V", ["👥 Por Pessoa", "📏 Por Padrão"], horizontal=True, label_visibility="collapsed")
+        visao = st.radio("V", ["👥 Pessoas", "📏 Padrões"], horizontal=True, label_visibility="collapsed")
         st.markdown("---")
 
-        if visao == "👥 Por Pessoa":
+        if visao == "👥 Pessoas":
             total = df_esc['CPF'].nunique()
             counts = {'P':0, 'A':0, 'C':0}
             data_list = []
@@ -354,7 +379,6 @@ elif pagina == "📊 Painel Gerencial":
                 info = df_esc[df_esc['CPF']==cpf].iloc[0]
                 pct = int((real/meta)*100) if meta>0 else 0
                 data_list.append({"Filial":info['Filial'], "Nome":info['Nome_Funcionario'], "Status":stt, "Prog":f"{real}/{meta} ({pct}%)"})
-            
             c1,c2,c3,c4 = st.columns(4)
             c1.metric("Pessoas", total)
             c2.metric("Concluídos", counts['C'])
@@ -362,10 +386,9 @@ elif pagina == "📊 Painel Gerencial":
             c4.metric("Pendentes", counts['P'])
             prog = counts['C']/total if total else 0
             st.progress(prog, f"Taxa: {int(prog*100)}%")
-            
             df_d = pd.DataFrame(data_list)
             if not df_d.empty:
-                t1,t2,t3 = st.tabs(["🔴","🟡","🟢"])
+                t1,t2,t3 = st.tabs(["🔴 Pendentes","🟡 Parciais","🟢 Concluídos"])
                 with t1: st.dataframe(df_d[df_d['Status'].str.contains("Pendente")], use_container_width=True)
                 with t2: st.dataframe(df_d[df_d['Status'].str.contains("Parcial")], use_container_width=True)
                 with t3: st.dataframe(df_d[df_d['Status'].str.contains("Concluído")], use_container_width=True)
