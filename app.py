@@ -32,8 +32,8 @@ def achar_coluna(df, termo):
         if termo.lower() in col.lower(): return col
     return None
 
-# --- CACHE INTELIGENTE (AUTOMÁTICO) ---
-@st.cache_data(ttl=600, show_spinner="Sincronizando Bases...")
+# --- CACHE INTELIGENTE ---
+@st.cache_data(ttl=600, show_spinner="Lendo Bases...")
 def carregar_bases_estaticas():
     try:
         conn = st.connection("gsheets", type=GSheetsConnection)
@@ -42,13 +42,13 @@ def carregar_bases_estaticas():
         try: df_a = conn.read(worksheet="Cadastro_Auditores")
         except: df_a = None
         
-        # Limpeza Agressiva
+        # Limpeza
         for df in [df_t, df_p]:
             df.dropna(how='all', inplace=True)
             df.columns = [c.strip() for c in df.columns]
-            for col in df.columns:
-                if col in ['CPF','Codigo_Padrao','Filial','Pergunta','Nome_Padrao']:
-                    df[col] = df[col].astype(str).str.replace(r'\.0$', '', regex=True).str.strip()
+            for c in df.columns:
+                if c in ['CPF','Codigo_Padrao','Filial','Pergunta','Nome_Padrao']:
+                    df[c] = df[c].astype(str).str.replace(r'\.0$', '', regex=True).str.strip()
         
         if df_a is not None:
             df_a.dropna(how='all', inplace=True)
@@ -71,33 +71,46 @@ st.sidebar.header("1. Conexão")
 if os.path.exists("logo.png"): st.sidebar.image("logo.png", use_container_width=True)
 else: st.sidebar.write("🏢 DTO 01 - DCS SCANIA")
 
-# Carga Inicial Automática
+# Carga Inicial
 df_treinos, df_perguntas, df_auditores, dados_ok = carregar_bases_estaticas()
 
 if dados_ok:
-    st.sidebar.success("✅ Base Conectada (Online)")
-    
-    # Lista para Ranking
+    st.sidebar.success("✅ Base Conectada")
     if not st.session_state['lista_auditores'] and df_auditores is not None:
         c_nome = achar_coluna(df_auditores, 'nome')
         if c_nome: st.session_state['lista_auditores'] = df_auditores[c_nome].unique().tolist()
     
-    # Sincronia de Respostas
     if not st.session_state['resultados']:
         df_cloud = carregar_respostas_nuvem()
         if not df_cloud.empty:
             df_cloud.columns = [c.strip() for c in df_cloud.columns]
-            for c in ['CPF', 'Padrao', 'Pergunta']:
-                if c in df_cloud.columns: df_cloud[c] = df_cloud[c].astype(str).str.replace(r'\.0$', '', regex=True).str.strip()
+            for c in df_cloud.columns: df_cloud[c] = df_cloud[c].astype(str).str.strip()
             st.session_state['resultados'] = df_cloud.to_dict('records')
-
 else:
     st.sidebar.warning("Tentando reconectar...")
     if st.sidebar.button("Forçar Recarga"): 
         st.cache_data.clear()
         st.rerun()
 
-# Login Inteligente
+# Upload Histórico Manual
+st.sidebar.markdown("---")
+uploaded_hist = st.sidebar.file_uploader("Importar Excel Local", type=["xlsx"], key="hist", accept_multiple_files=True)
+if uploaded_hist:
+    dfs = []
+    try:
+        for f in uploaded_hist:
+            d = pd.read_excel(f)
+            d.columns = [c.strip() for c in d.columns]
+            for c in ['CPF','Padrao','Pergunta','Auditor_CPF','Filial']:
+                if c in d.columns: d[c] = d[c].astype(str).str.strip()
+            dfs.append(d)
+        if dfs:
+            novos = pd.concat(dfs, ignore_index=True).to_dict('records')
+            st.session_state['resultados'].extend(novos)
+            st.sidebar.success(f"Importado: {len(novos)} regs")
+    except Exception as e: st.sidebar.error(f"Erro: {e}")
+
+# Login
 if dados_ok:
     if df_auditores is not None:
         col_cpf = achar_coluna(df_auditores, 'cpf')
@@ -105,9 +118,7 @@ if dados_ok:
             st.sidebar.markdown("---")
             if st.session_state['auditor_logado']:
                 user = st.session_state['auditor_logado']
-                perms = st.session_state['permissoes']
                 st.sidebar.success(f"👤 {user['Nome']}")
-                
                 if st.sidebar.button("Sair"):
                     st.session_state['auditor_logado'] = None
                     st.session_state['permissoes'] = {'filiais': [], 'padroes': [], 'perfil': ''}
@@ -116,8 +127,8 @@ if dados_ok:
                 st.sidebar.subheader("🔐 Login")
                 cpf_in = st.sidebar.text_input("CPF (Apenas números)", type="password")
                 if st.sidebar.button("Entrar"):
-                    cpf_clean = cpf_in.replace('.','').replace('-','').strip()
-                    match = df_auditores[df_auditores[col_cpf]==cpf_clean]
+                    cpf_cl = cpf_in.replace('.','').replace('-','').strip()
+                    match = df_auditores[df_auditores[col_cpf]==cpf_cl]
                     if not match.empty:
                         dat = match.iloc[0]
                         c_nm = achar_coluna(df_auditores, 'nome') or col_cpf
@@ -136,13 +147,26 @@ if dados_ok:
                         if 'todos' in raw_p.lower() or raw_p=='nan': pads_perm = 'TODOS'
                         else: pads_perm = [x.strip() for x in raw_p.split(',')]
 
-                        st.session_state['auditor_logado'] = {'Nome': nome, 'CPF': cpf_clean}
-                        st.session_state['permissoes'] = {'filiais': fils_perm, 'padroes': pads_perm, 'perfil': perfil}
+                        st.session_state['auditor_logado'] = {'Nome': nome, 'CPF': cpf_cl}
+                        # CORREÇÃO AQUI: Usando a variável correta 'perf'
+                        st.session_state['permissoes'] = {'filiais': fils_perm, 'padroes': pads_perm, 'perfil': perf}
                         st.rerun()
                     else: st.sidebar.error("CPF não encontrado.")
     else:
         st.session_state['auditor_logado'] = {'Nome': 'Geral', 'CPF': '000'}
         st.session_state['permissoes'] = {'filiais': 'TODAS', 'padroes': 'TODOS', 'perfil': 'Gestor'}
+
+# Download
+if st.session_state['resultados']:
+    st.sidebar.markdown("---")
+    st.sidebar.write("📂 **Backup**")
+    df_dw = pd.DataFrame(st.session_state['resultados'])
+    perms = st.session_state['permissoes']
+    if st.session_state['auditor_logado'] and perms.get('perfil')!='Gestor' and perms.get('filiais')!='TODAS':
+        if 'Filial' in df_dw.columns: df_dw = df_dw[df_dw['Filial'].isin(perms['filiais'])]
+    
+    excel_data = gerar_excel(df_dw)
+    if excel_data: st.sidebar.download_button("📥 Baixar Planilha", excel_data, "Backup_Auditoria.xlsx", mime="application/vnd.ms-excel")
 
 st.sidebar.markdown("---")
 pagina = st.sidebar.radio("Menu:", ["📝 EXECUTAR DTO 01", "📊 Painel Gerencial"])
@@ -323,7 +347,6 @@ elif pagina == "📊 Painel Gerencial":
                 df_rf = df_res[(df_res['Filial'].isin(f_sel)) & (df_res['Padrao'].isin(p_sel))]
         metas = df_perguntas.groupby('Codigo_Padrao').size().to_dict()
 
-        # PERFORMANCE AUDITOR (GESTOR)
         if perms.get('perfil') == 'Gestor' and df_auditores is not None:
             st.subheader("🏆 Performance Operacional")
             try:
@@ -350,11 +373,10 @@ elif pagina == "📊 Painel Gerencial":
                     
                     df_uni = df_treinos[(df_treinos['Filial'].isin(lf)) & (df_treinos['Codigo_Padrao'].isin(lp))]
                     meta_aud = sum(metas.get(str(r['Codigo_Padrao']),0) for _, r in df_uni.iterrows())
-                    
                     r_aud = len(df_rf[df_rf['Auditor_Nome'] == nm]) if not df_rf.empty and 'Auditor_Nome' in df_rf.columns else 0
                     pend = max(0, meta_aud - r_aud)
-                    pct = int((r_aud/meta_aud)*100) if meta_aud > 0 else 0
-                    tbl_perf.append({"Auditor": nm, "Meta": meta_aud, "Real": r_aud, "Pend": pend, "%": f"{pct}%"})
+                    pct = int((r_aud/m_aud)*100) if m_aud > 0 else 0
+                    tbl_perf.append({"Auditor": nm, "Meta": m_aud, "Real": r_aud, "Pend": pend, "%": f"{pct}%"})
                 st.dataframe(pd.DataFrame(tbl_perf).sort_values(by="Real", ascending=False), use_container_width=True)
             except: pass
             st.markdown("---")
