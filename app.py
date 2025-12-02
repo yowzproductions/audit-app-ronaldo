@@ -33,7 +33,7 @@ def achar_coluna(df, termo):
     return None
 
 # --- CACHE INTELIGENTE (AUTOMÁTICO) ---
-@st.cache_data(ttl=600, show_spinner="Sincronizando Bases...")
+@st.cache_data(ttl=600, show_spinner="Lendo Bases...")
 def carregar_bases_estaticas():
     try:
         conn = st.connection("gsheets", type=GSheetsConnection)
@@ -42,13 +42,13 @@ def carregar_bases_estaticas():
         try: df_a = conn.read(worksheet="Cadastro_Auditores")
         except: df_a = None
         
-        # Limpeza Agressiva
+        # Limpeza
         for df in [df_t, df_p]:
             df.dropna(how='all', inplace=True)
             df.columns = [c.strip() for c in df.columns]
-            for col in df.columns:
-                if col in ['CPF','Codigo_Padrao','Filial','Pergunta','Nome_Padrao']:
-                    df[col] = df[col].astype(str).str.replace(r'\.0$', '', regex=True).str.strip()
+            for c in df.columns:
+                if c in ['CPF','Codigo_Padrao','Filial','Pergunta','Nome_Padrao']:
+                    df[c] = df[c].astype(str).str.replace(r'\.0$', '', regex=True).str.strip()
         
         if df_a is not None:
             df_a.dropna(how='all', inplace=True)
@@ -75,20 +75,16 @@ else: st.sidebar.write("🏢 DTO 01 - DCS SCANIA")
 df_treinos, df_perguntas, df_auditores, dados_ok = carregar_bases_estaticas()
 
 if dados_ok:
-    st.sidebar.success("✅ Base Conectada (Online)")
-    
-    # Lista para Ranking
+    st.sidebar.success("✅ Base Conectada")
     if not st.session_state['lista_auditores'] and df_auditores is not None:
         c_nome = achar_coluna(df_auditores, 'nome')
         if c_nome: st.session_state['lista_auditores'] = df_auditores[c_nome].unique().tolist()
     
-    # Sincronia de Respostas
     if not st.session_state['resultados']:
         df_cloud = carregar_respostas_nuvem()
         if not df_cloud.empty:
             df_cloud.columns = [c.strip() for c in df_cloud.columns]
-            for c in ['CPF', 'Padrao', 'Pergunta']:
-                if c in df_cloud.columns: df_cloud[c] = df_cloud[c].astype(str).str.replace(r'\.0$', '', regex=True).str.strip()
+            for c in df_cloud.columns: df_cloud[c] = df_cloud[c].astype(str).str.strip()
             st.session_state['resultados'] = df_cloud.to_dict('records')
 
 else:
@@ -96,6 +92,24 @@ else:
     if st.sidebar.button("Forçar Recarga"): 
         st.cache_data.clear()
         st.rerun()
+
+# Upload Histórico Manual
+st.sidebar.markdown("---")
+uploaded_hist = st.sidebar.file_uploader("Importar Excel Local", type=["xlsx"], key="hist", accept_multiple_files=True)
+if uploaded_hist:
+    dfs = []
+    try:
+        for f in uploaded_hist:
+            d = pd.read_excel(f)
+            d.columns = [c.strip() for c in d.columns]
+            for c in ['CPF','Padrao','Pergunta','Auditor_CPF','Filial']:
+                if c in d.columns: d[c] = d[c].astype(str).str.strip()
+            dfs.append(d)
+        if dfs:
+            novos = pd.concat(dfs, ignore_index=True).to_dict('records')
+            st.session_state['resultados'].extend(novos)
+            st.sidebar.success(f"Importado: {len(novos)} regs")
+    except Exception as e: st.sidebar.error(f"Erro: {e}")
 
 # Login Inteligente
 if dados_ok:
@@ -105,9 +119,7 @@ if dados_ok:
             st.sidebar.markdown("---")
             if st.session_state['auditor_logado']:
                 user = st.session_state['auditor_logado']
-                perms = st.session_state['permissoes']
                 st.sidebar.success(f"👤 {user['Nome']}")
-                
                 if st.sidebar.button("Sair"):
                     st.session_state['auditor_logado'] = None
                     st.session_state['permissoes'] = {'filiais': [], 'padroes': [], 'perfil': ''}
@@ -137,18 +149,30 @@ if dados_ok:
                         else: pads_perm = [x.strip() for x in raw_p.split(',')]
 
                         st.session_state['auditor_logado'] = {'Nome': nome, 'CPF': cpf_cl}
-                        st.session_state['permissoes'] = {'filiais': fils_perm, 'padroes': pads_perm, 'perfil': perf}
+                        st.session_state['permissoes'] = {'filiais': fils_perm, 'padroes': pads_perm, 'perfil': perfil}
                         st.rerun()
                     else: st.sidebar.error("CPF não encontrado.")
     else:
         st.session_state['auditor_logado'] = {'Nome': 'Geral', 'CPF': '000'}
         st.session_state['permissoes'] = {'filiais': 'TODAS', 'padroes': 'TODOS', 'perfil': 'Gestor'}
 
+# Download
+if st.session_state['resultados']:
+    st.sidebar.markdown("---")
+    st.sidebar.write("📂 **Backup**")
+    df_dw = pd.DataFrame(st.session_state['resultados'])
+    perms = st.session_state['permissoes']
+    if st.session_state['auditor_logado'] and perms.get('perfil')!='Gestor' and perms.get('filiais')!='TODAS':
+        if 'Filial' in df_dw.columns: df_dw = df_dw[df_dw['Filial'].isin(perms['filiais'])]
+    
+    excel_data = gerar_excel(df_dw)
+    if excel_data: st.sidebar.download_button("📥 Baixar Planilha", excel_data, "Backup_Auditoria.xlsx", mime="application/vnd.ms-excel")
+
 st.sidebar.markdown("---")
 pagina = st.sidebar.radio("Menu:", ["📝 EXECUTAR DTO 01", "📊 Painel Gerencial"])
 # ================= EXECUÇÃO =================
 if pagina == "📝 EXECUTAR DTO 01":
-    if not dados_ok: st.info("⏳ Carregando...")
+    if not dados_ok: st.info("⏳ Aguardando dados...")
     elif df_auditores is not None and st.session_state['auditor_logado'] is None:
         st.warning("🔒 Acesso Bloqueado. Faça login.")
     else:
@@ -280,7 +304,6 @@ if pagina == "📝 EXECUTAR DTO 01":
                                         df_novos['key'] = df_novos['CPF']+df_novos['Padrao']+df_novos['Pergunta']
                                         keys_new = df_novos['key'].tolist()
                                         df_final = pd.concat([df_n[~df_n['key'].isin(keys_new)].drop(columns=['key']), df_novos.drop(columns=['key'])], ignore_index=True)
-                                    
                                     conn.update(worksheet="Respostas_DB", data=df_final)
                                     st.success("Salvo na Nuvem!"); st.rerun()
                                 except Exception as e: st.error(f"Erro Nuvem: {e}")
@@ -417,8 +440,8 @@ elif pagina == "📊 Painel Gerencial":
                 for c in sub['CPF']:
                     m = metas.get(p,0)
                     if resps_det.get((c,p),0) >= m and m>0: qok+=1
-                n_p = mapa_nomes.get(p,p)
                 pct = int((qok/qm)*100) if qm>0 else 0
+                n_p = mapa_nomes.get(p,p)
                 vol_data.append({"Padrão":p, "Desc":n_p, "Vol":qm, "Ok":qok, "%":f"{pct}%"})
             c1,c2,c3,c4 = st.columns(4)
             c1.metric("Volume Total", total_vol)
