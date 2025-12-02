@@ -32,8 +32,8 @@ def achar_coluna(df, termo):
         if termo.lower() in col.lower(): return col
     return None
 
-# --- CACHE INTELIGENTE ---
-@st.cache_data(ttl=600, show_spinner="Lendo Bases...")
+# --- CACHE INTELIGENTE (AUTOMÁTICO) ---
+@st.cache_data(ttl=600, show_spinner="Sincronizando Bases...")
 def carregar_bases_estaticas():
     try:
         conn = st.connection("gsheets", type=GSheetsConnection)
@@ -42,13 +42,13 @@ def carregar_bases_estaticas():
         try: df_a = conn.read(worksheet="Cadastro_Auditores")
         except: df_a = None
         
-        # Limpeza
+        # Limpeza Agressiva
         for df in [df_t, df_p]:
             df.dropna(how='all', inplace=True)
             df.columns = [c.strip() for c in df.columns]
-            for c in df.columns:
-                if c in ['CPF','Codigo_Padrao','Filial','Pergunta','Nome_Padrao']:
-                    df[c] = df[c].astype(str).str.replace(r'\.0$', '', regex=True).str.strip()
+            for col in df.columns:
+                if col in ['CPF','Codigo_Padrao','Filial','Pergunta','Nome_Padrao']:
+                    df[col] = df[col].astype(str).str.replace(r'\.0$', '', regex=True).str.strip()
         
         if df_a is not None:
             df_a.dropna(how='all', inplace=True)
@@ -71,28 +71,33 @@ st.sidebar.header("1. Conexão")
 if os.path.exists("logo.png"): st.sidebar.image("logo.png", use_container_width=True)
 else: st.sidebar.write("🏢 DTO 01 - DCS SCANIA")
 
-# Carga Inicial
+# Carga Inicial Automática
 df_treinos, df_perguntas, df_auditores, dados_ok = carregar_bases_estaticas()
 
 if dados_ok:
-    st.sidebar.success("✅ Base Conectada")
+    st.sidebar.success("✅ Base Conectada (Online)")
+    
+    # Lista para Ranking
     if not st.session_state['lista_auditores'] and df_auditores is not None:
         c_nome = achar_coluna(df_auditores, 'nome')
         if c_nome: st.session_state['lista_auditores'] = df_auditores[c_nome].unique().tolist()
     
+    # Sincronia de Respostas
     if not st.session_state['resultados']:
         df_cloud = carregar_respostas_nuvem()
         if not df_cloud.empty:
             df_cloud.columns = [c.strip() for c in df_cloud.columns]
-            for c in df_cloud.columns: df_cloud[c] = df_cloud[c].astype(str).str.strip()
+            for c in ['CPF', 'Padrao', 'Pergunta']:
+                if c in df_cloud.columns: df_cloud[c] = df_cloud[c].astype(str).str.replace(r'\.0$', '', regex=True).str.strip()
             st.session_state['resultados'] = df_cloud.to_dict('records')
+
 else:
     st.sidebar.warning("Tentando reconectar...")
     if st.sidebar.button("Forçar Recarga"): 
         st.cache_data.clear()
         st.rerun()
 
-# Login
+# Login Inteligente
 if dados_ok:
     if df_auditores is not None:
         col_cpf = achar_coluna(df_auditores, 'cpf')
@@ -100,7 +105,9 @@ if dados_ok:
             st.sidebar.markdown("---")
             if st.session_state['auditor_logado']:
                 user = st.session_state['auditor_logado']
+                perms = st.session_state['permissoes']
                 st.sidebar.success(f"👤 {user['Nome']}")
+                
                 if st.sidebar.button("Sair"):
                     st.session_state['auditor_logado'] = None
                     st.session_state['permissoes'] = {'filiais': [], 'padroes': [], 'perfil': ''}
@@ -130,7 +137,7 @@ if dados_ok:
                         else: pads_perm = [x.strip() for x in raw_p.split(',')]
 
                         st.session_state['auditor_logado'] = {'Nome': nome, 'CPF': cpf_cl}
-                        st.session_state['permissoes'] = {'filiais': fils_perm, 'padroes': pads_perm, 'perfil': perfil}
+                        st.session_state['permissoes'] = {'filiais': fils_perm, 'padroes': pads_perm, 'perfil': perf}
                         st.rerun()
                     else: st.sidebar.error("CPF não encontrado.")
     else:
@@ -141,37 +148,26 @@ st.sidebar.markdown("---")
 pagina = st.sidebar.radio("Menu:", ["📝 EXECUTAR DTO 01", "📊 Painel Gerencial"])
 # ================= EXECUÇÃO =================
 if pagina == "📝 EXECUTAR DTO 01":
-    if not dados_ok: st.info("⏳ Aguardando dados...")
+    if not dados_ok: st.info("⏳ Carregando...")
     elif df_auditores is not None and st.session_state['auditor_logado'] is None:
-        st.warning("🔒 Acesso Bloqueado. Faça login na barra lateral.")
+        st.warning("🔒 Acesso Bloqueado. Faça login.")
     else:
         st.title("📝 EXECUTAR DTO 01")
         perms = st.session_state['permissoes']
         st.sidebar.header("Filtros Execução")
         
-        # 1. FILTRIO DE FILIAL (CORRIGIDO)
-        # Pega todas as filiais disponíveis na base de dados
+        # Filtros Blindados
         todas_f = sorted(df_treinos['Filial'].dropna().unique())
-        
-        if perms['filiais'] == 'TODAS':
-            opts_f = todas_f
-        else:
-            # Filtra: Só mostra se a filial da base estiver na lista de permissões do usuário
-            # O .strip() garante que espaços não atrapalhem
-            opts_f = sorted([f for f in todas_f if f.strip() in perms['filiais']])
-            
+        if perms['filiais'] == 'TODAS': opts_f = todas_f
+        else: opts_f = sorted([f for f in todas_f if f in perms['filiais']])
         sel_fil = st.sidebar.multiselect("Selecione Filiais", opts_f, default=opts_f if len(opts_f)==1 else None)
         
-        # 2. FILTRO DE PADRÃO (CORRIGIDO)
-        todas_p = sorted(df_perguntas['Codigo_Padrao'].dropna().unique())
-        
-        if perms['padroes'] == 'TODOS':
-            opts_p = todas_p
-        else:
-            opts_p = sorted([p for p in todas_p if str(p).strip() in perms['padroes']])
-            
         # Seletor de Modo
         modo_busca = st.sidebar.radio("Modo de Busca:", ["Por Padrões", "Por Colaborador"])
+        
+        todas_p = sorted(df_perguntas['Codigo_Padrao'].dropna().unique())
+        if perms['padroes'] == 'TODOS': opts_p = todas_p
+        else: opts_p = sorted([p for p in todas_p if str(p) in perms['padroes']])
         
         df_m = pd.DataFrame()
         sel_pad = []
@@ -308,7 +304,6 @@ elif pagina == "📊 Painel Gerencial":
             else: st.success("Base OK.")
 
         st.sidebar.header("Filtros Dashboard")
-        
         todas_f = sorted(df_treinos['Filial'].unique())
         if perms['filiais'] == 'TODAS': opts_f = todas_f
         else: opts_f = sorted([f for f in todas_f if f in perms['filiais']])
@@ -322,7 +317,6 @@ elif pagina == "📊 Painel Gerencial":
         st.markdown("---")
         
         df_esc = df_treinos[(df_treinos['Filial'].isin(f_sel)) & (df_treinos['Codigo_Padrao'].isin(p_sel))]
-        
         df_res = pd.DataFrame(st.session_state['resultados'])
         df_rf = pd.DataFrame()
         if not df_res.empty:
@@ -356,14 +350,10 @@ elif pagina == "📊 Painel Gerencial":
                     
                     df_uni = df_treinos[(df_treinos['Filial'].isin(lf)) & (df_treinos['Codigo_Padrao'].isin(lp))]
                     meta_aud = sum(metas.get(str(r['Codigo_Padrao']),0) for _, r in df_uni.iterrows())
-                    
-                    r_aud = 0
-                    if not df_rf.empty and 'Auditor_Nome' in df_rf.columns:
-                        r_aud = len(df_rf[df_rf['Auditor_Nome'] == nm])
-                    
+                    r_aud = len(df_rf[df_rf['Auditor_Nome'] == nm]) if not df_rf.empty and 'Auditor_Nome' in df_rf.columns else 0
                     pend = max(0, meta_aud - r_aud)
                     pct = int((r_aud/meta_aud)*100) if meta_aud > 0 else 0
-                    tbl_perf.append({"Auditor": nm, "Meta": m_aud, "Real": r_aud, "Pend": pend, "%": f"{pct}%"})
+                    tbl_perf.append({"Auditor": nm, "Meta": meta_aud, "Real": r_aud, "Pend": pend, "%": f"{pct}%"})
                 st.dataframe(pd.DataFrame(tbl_perf).sort_values(by="Real", ascending=False), use_container_width=True)
             except: pass
             st.markdown("---")
