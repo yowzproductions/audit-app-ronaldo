@@ -74,7 +74,7 @@ else: st.sidebar.write("🏢 DTO 01 - DCS SCANIA")
 df_treinos, df_perguntas, df_auditores, dados_ok = carregar_bases_estaticas()
 
 if dados_ok:
-    st.sidebar.success("✅ Base Conectada")
+    st.sidebar.success("✅ Base Carregada")
     if not st.session_state['lista_auditores'] and df_auditores is not None:
         c_nome = achar_coluna(df_auditores, 'nome')
         if c_nome: st.session_state['lista_auditores'] = df_auditores[c_nome].unique().tolist()
@@ -118,7 +118,8 @@ if dados_ok:
                         c_pad = achar_coluna(df_auditores, 'padroes') or achar_coluna(df_auditores, 'padrões')
 
                         nome = dat[c_nm]
-                        perf = str(dat[c_pf]).strip() if c_pf else 'Auditor'
+                        # CORREÇÃO AQUI: Variável agora chama 'perfil' para bater com o final
+                        perfil = str(dat.get(c_pf, 'Auditor')).strip() if c_pf else 'Auditor'
                         
                         raw_f = str(dat.get(c_fil, 'Todas')) if c_fil else 'Todas'
                         if 'todas' in raw_f.lower() or raw_f=='nan': fils_perm = 'TODAS'
@@ -136,6 +137,18 @@ if dados_ok:
         st.session_state['auditor_logado'] = {'Nome': 'Geral', 'CPF': '000'}
         st.session_state['permissoes'] = {'filiais': 'TODAS', 'padroes': 'TODOS', 'perfil': 'Gestor'}
 
+# Download
+if st.session_state['resultados']:
+    st.sidebar.markdown("---")
+    st.sidebar.write("📂 **Backup**")
+    df_dw = pd.DataFrame(st.session_state['resultados'])
+    perms = st.session_state['permissoes']
+    if st.session_state['auditor_logado'] and perms.get('perfil')!='Gestor' and perms.get('filiais')!='TODAS':
+        if 'Filial' in df_dw.columns: df_dw = df_dw[df_dw['Filial'].isin(perms['filiais'])]
+    
+    excel_data = gerar_excel(df_dw)
+    if excel_data: st.sidebar.download_button("📥 Baixar Planilha", excel_data, "Backup_Auditoria.xlsx", mime="application/vnd.ms-excel")
+
 st.sidebar.markdown("---")
 pagina = st.sidebar.radio("Menu:", ["📝 EXECUTAR DTO 01", "📊 Painel Gerencial"])
 # ================= EXECUÇÃO =================
@@ -148,13 +161,13 @@ if pagina == "📝 EXECUTAR DTO 01":
         perms = st.session_state['permissoes']
         st.sidebar.header("Filtros Execução")
         
-        # 1. Filiais
+        # Filtros Blindados
         todas_f = sorted(df_treinos['Filial'].dropna().unique())
         if perms['filiais'] == 'TODAS': opts_f = todas_f
         else: opts_f = sorted([f for f in todas_f if f in perms['filiais']])
         sel_fil = st.sidebar.multiselect("Selecione Filiais", opts_f, default=opts_f if len(opts_f)==1 else None)
         
-        # 2. Modo de Busca (RESTAURADO)
+        # Seletor de Modo
         modo_busca = st.sidebar.radio("Modo de Busca:", ["Por Padrões", "Por Colaborador"])
         
         todas_p = sorted(df_perguntas['Codigo_Padrao'].dropna().unique())
@@ -162,14 +175,13 @@ if pagina == "📝 EXECUTAR DTO 01":
         else: opts_p = sorted([p for p in todas_p if str(p) in perms['padroes']])
         
         df_m = pd.DataFrame()
-        
-        # Lógica do Seletor
+        sel_pad = []
+
         if modo_busca == "Por Padrões":
             sel_pad = list(opts_p) if st.sidebar.checkbox("Todos Meus Padrões", key="pe") else st.sidebar.multiselect("Padrões", opts_p)
             if sel_fil and sel_pad:
                 df_m = df_treinos[(df_treinos['Filial'].isin(sel_fil)) & (df_treinos['Codigo_Padrao'].isin(sel_pad))]
         else:
-            # Modo Colaborador
             if sel_fil:
                 pessoas = sorted(df_treinos[df_treinos['Filial'].isin(sel_fil)]['Nome_Funcionario'].unique())
                 sel_pessoa = st.sidebar.selectbox("Selecione o Colaborador", pessoas)
@@ -178,6 +190,7 @@ if pagina == "📝 EXECUTAR DTO 01":
                     if perms['padroes'] != 'TODOS':
                         df_pessoa = df_pessoa[df_pessoa['Codigo_Padrao'].isin(perms['padroes'])]
                     df_m = df_pessoa
+                    sel_pad = df_m['Codigo_Padrao'].unique().tolist()
 
         if not df_m.empty:
             mapa_nomes = {}
@@ -272,6 +285,7 @@ if pagina == "📝 EXECUTAR DTO 01":
                                         df_novos['key'] = df_novos['CPF']+df_novos['Padrao']+df_novos['Pergunta']
                                         keys_new = df_novos['key'].tolist()
                                         df_final = pd.concat([df_n[~df_n['key'].isin(keys_new)].drop(columns=['key']), df_novos.drop(columns=['key'])], ignore_index=True)
+                                    
                                     conn.update(worksheet="Respostas_DB", data=df_final)
                                     st.success("Salvo na Nuvem!"); st.rerun()
                                 except Exception as e: st.error(f"Erro Nuvem: {e}")
@@ -341,10 +355,14 @@ elif pagina == "📊 Painel Gerencial":
                     
                     df_uni = df_treinos[(df_treinos['Filial'].isin(lf)) & (df_treinos['Codigo_Padrao'].isin(lp))]
                     meta_aud = sum(metas.get(str(r['Codigo_Padrao']),0) for _, r in df_uni.iterrows())
-                    r_aud = len(df_rf[df_rf['Auditor_Nome'] == nm]) if not df_rf.empty and 'Auditor_Nome' in df_rf.columns else 0
-                    pend = max(0, m_aud - r_aud)
-                    pct = int((r_aud/m_aud)*100) if m_aud > 0 else 0
-                    tbl_perf.append({"Auditor": nm, "Meta": m_aud, "Real": r_aud, "Pend": pend, "%": f"{pct}%"})
+                    
+                    r_aud = 0
+                    if not df_rf.empty and 'Auditor_Nome' in df_rf.columns:
+                        r_aud = len(df_rf[df_rf['Auditor_Nome'] == nm])
+                    
+                    pend = max(0, meta_aud - r_aud)
+                    pct = int((r_aud/meta_aud)*100) if meta_aud > 0 else 0
+                    tbl_perf.append({"Auditor": nm, "Meta": meta_aud, "Real": r_aud, "Pend": pend, "%": f"{pct}%"})
                 st.dataframe(pd.DataFrame(tbl_perf).sort_values(by="Real", ascending=False), use_container_width=True)
             except: pass
             st.markdown("---")
