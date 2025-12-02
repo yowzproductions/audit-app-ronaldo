@@ -32,7 +32,7 @@ def achar_coluna(df, termo):
         if termo.lower() in col.lower(): return col
     return None
 
-# --- CACHE INTELIGENTE ---
+# --- CACHE INTELIGENTE (AUTOMÁTICO) ---
 @st.cache_data(ttl=600, show_spinner="Lendo Bases...")
 def carregar_bases_estaticas():
     try:
@@ -71,11 +71,12 @@ st.sidebar.header("1. Conexão")
 if os.path.exists("logo.png"): st.sidebar.image("logo.png", use_container_width=True)
 else: st.sidebar.write("🏢 DTO 01 - DCS SCANIA")
 
-# Carga Inicial
+# Carga Inicial Automática
 df_treinos, df_perguntas, df_auditores, dados_ok = carregar_bases_estaticas()
 
 if dados_ok:
     st.sidebar.success("✅ Base Conectada")
+    
     if not st.session_state['lista_auditores'] and df_auditores is not None:
         c_nome = achar_coluna(df_auditores, 'nome')
         if c_nome: st.session_state['lista_auditores'] = df_auditores[c_nome].unique().tolist()
@@ -84,8 +85,10 @@ if dados_ok:
         df_cloud = carregar_respostas_nuvem()
         if not df_cloud.empty:
             df_cloud.columns = [c.strip() for c in df_cloud.columns]
-            for c in df_cloud.columns: df_cloud[c] = df_cloud[c].astype(str).str.strip()
+            for c in ['CPF', 'Padrao', 'Pergunta']:
+                if c in df_cloud.columns: df_cloud[c] = df_cloud[c].astype(str).str.replace(r'\.0$', '', regex=True).str.strip()
             st.session_state['resultados'] = df_cloud.to_dict('records')
+
 else:
     st.sidebar.warning("Tentando reconectar...")
     if st.sidebar.button("Forçar Recarga"): 
@@ -110,7 +113,7 @@ if uploaded_hist:
             st.sidebar.success(f"Importado: {len(novos)} regs")
     except Exception as e: st.sidebar.error(f"Erro: {e}")
 
-# Login
+# Login Inteligente (O SEGRED0 DA SEGURANÇA)
 if dados_ok:
     if df_auditores is not None:
         col_cpf = achar_coluna(df_auditores, 'cpf')
@@ -118,7 +121,9 @@ if dados_ok:
             st.sidebar.markdown("---")
             if st.session_state['auditor_logado']:
                 user = st.session_state['auditor_logado']
+                perms = st.session_state['permissoes']
                 st.sidebar.success(f"👤 {user['Nome']}")
+                st.sidebar.caption(f"Perfil: {perms['perfil']}")
                 if st.sidebar.button("Sair"):
                     st.session_state['auditor_logado'] = None
                     st.session_state['permissoes'] = {'filiais': [], 'padroes': [], 'perfil': ''}
@@ -139,16 +144,17 @@ if dados_ok:
                         nome = dat[c_nm]
                         perf = str(dat.get(c_pf, 'Auditor')).strip() if c_pf else 'Auditor'
                         
+                        # Lógica de Filiais Permitidas
                         raw_f = str(dat.get(c_fil, 'Todas')) if c_fil else 'Todas'
                         if 'todas' in raw_f.lower() or raw_f=='nan': fils_perm = 'TODAS'
                         else: fils_perm = [x.strip() for x in raw_f.split(',')]
                             
+                        # Lógica de Padrões Permitidos
                         raw_p = str(dat.get(c_pad, 'Todos')) if c_pad else 'Todos'
                         if 'todos' in raw_p.lower() or raw_p=='nan': pads_perm = 'TODOS'
                         else: pads_perm = [x.strip() for x in raw_p.split(',')]
 
                         st.session_state['auditor_logado'] = {'Nome': nome, 'CPF': cpf_cl}
-                        # CORREÇÃO AQUI: Usando a variável correta 'perf'
                         st.session_state['permissoes'] = {'filiais': fils_perm, 'padroes': pads_perm, 'perfil': perf}
                         st.rerun()
                     else: st.sidebar.error("CPF não encontrado.")
@@ -156,7 +162,7 @@ if dados_ok:
         st.session_state['auditor_logado'] = {'Nome': 'Geral', 'CPF': '000'}
         st.session_state['permissoes'] = {'filiais': 'TODAS', 'padroes': 'TODOS', 'perfil': 'Gestor'}
 
-# Download
+# Download Backup
 if st.session_state['resultados']:
     st.sidebar.markdown("---")
     st.sidebar.write("📂 **Backup**")
@@ -180,15 +186,16 @@ if pagina == "📝 EXECUTAR DTO 01":
         perms = st.session_state['permissoes']
         st.sidebar.header("Filtros Execução")
         
-        # Filtros Blindados
+        # 1. Filtros Blindados (Filiais)
         todas_f = sorted(df_treinos['Filial'].dropna().unique())
         if perms['filiais'] == 'TODAS': opts_f = todas_f
         else: opts_f = sorted([f for f in todas_f if f in perms['filiais']])
         sel_fil = st.sidebar.multiselect("Selecione Filiais", opts_f, default=opts_f if len(opts_f)==1 else None)
         
-        # Seletor de Modo
+        # 2. Modo de Busca
         modo_busca = st.sidebar.radio("Modo de Busca:", ["Por Padrões", "Por Colaborador"])
         
+        # 3. Filtros Blindados (Padrões)
         todas_p = sorted(df_perguntas['Codigo_Padrao'].dropna().unique())
         if perms['padroes'] == 'TODOS': opts_p = todas_p
         else: opts_p = sorted([p for p in todas_p if str(p) in perms['padroes']])
@@ -312,6 +319,7 @@ if pagina == "📝 EXECUTAR DTO 01":
             if st.session_state['resultados']:
                 st.subheader("📋 Resumo Sessão")
                 st.dataframe(pd.DataFrame(st.session_state['resultados']), use_container_width=True)
+                if st.button("🗑️ Apagar Tudo", type="primary"): st.session_state['resultados']=[]; st.rerun()
         else: st.info("Selecione filtros.")
             # ================= PAINEL =================
 elif pagina == "📊 Painel Gerencial":
@@ -440,8 +448,8 @@ elif pagina == "📊 Painel Gerencial":
                 for c in sub['CPF']:
                     m = metas.get(p,0)
                     if resps_det.get((c,p),0) >= m and m>0: qok+=1
-                pct = int((qok/qm)*100) if qm>0 else 0
                 n_p = mapa_nomes.get(p,p)
+                pct = int((qok/qm)*100) if qm>0 else 0
                 vol_data.append({"Padrão":p, "Desc":n_p, "Vol":qm, "Ok":qok, "%":f"{pct}%"})
             c1,c2,c3,c4 = st.columns(4)
             c1.metric("Volume Total", total_vol)
