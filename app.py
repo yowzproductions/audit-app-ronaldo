@@ -42,16 +42,28 @@ def carregar_bases_estaticas():
         try: df_a = conn.read(worksheet="Cadastro_Auditores")
         except: df_a = None
         
+        # --- LIMPEZA AGRESSIVA DE DADOS ---
+        # Garante que CPF e Nomes não tenham espaços ocultos que quebram filtros
         for df in [df_t, df_p]:
             df.dropna(how='all', inplace=True)
             df.columns = [c.strip() for c in df.columns]
-            for c in df.columns:
-                if c in ['CPF','Codigo_Padrao','Filial','Pergunta','Nome_Padrao']:
-                    df[c] = df[c].astype(str).str.replace(r'\.0$', '', regex=True).str.strip()
+            
+            # Converte tudo para texto e remove espaços das pontas
+            for col in df.columns:
+                if df[col].dtype == 'object':
+                    df[col] = df[col].astype(str).str.strip()
+                # Tratamento especial para chaves
+                if col in ['CPF','Codigo_Padrao','Filial','Pergunta','Nome_Padrao']:
+                    df[col] = df[col].astype(str).str.replace(r'\.0$', '', regex=True).str.strip()
         
         if df_a is not None:
             df_a.dropna(how='all', inplace=True)
             df_a.columns = [c.strip() for c in df_a.columns]
+            # Limpa todas as células de texto do cadastro também
+            for col in df_a.columns:
+                if df_a[col].dtype == 'object':
+                    df_a[col] = df_a[col].astype(str).str.strip()
+                    
             c_cpf = achar_coluna(df_a, 'cpf')
             if c_cpf: df_a[c_cpf] = df_a[c_cpf].astype(str).str.replace(r'\.0$', '', regex=True).str.strip()
             
@@ -83,7 +95,10 @@ if dados_ok:
         df_cloud = carregar_respostas_nuvem()
         if not df_cloud.empty:
             df_cloud.columns = [c.strip() for c in df_cloud.columns]
-            for c in df_cloud.columns: df_cloud[c] = df_cloud[c].astype(str).str.strip()
+            # Limpeza também no que vem da nuvem
+            for c in df_cloud.columns: 
+                if df_cloud[c].dtype == 'object':
+                    df_cloud[c] = df_cloud[c].astype(str).str.strip()
             st.session_state['resultados'] = df_cloud.to_dict('records')
 else:
     st.sidebar.warning("Tentando reconectar...")
@@ -118,19 +133,25 @@ if dados_ok:
                         c_pad = achar_coluna(df_auditores, 'padroes') or achar_coluna(df_auditores, 'padrões')
 
                         nome = dat[c_nm]
-                        # CORREÇÃO AQUI: Variável agora chama 'perfil' para bater com o final
-                        perfil = str(dat.get(c_pf, 'Auditor')).strip() if c_pf else 'Auditor'
+                        perf = str(dat.get(c_pf, 'Auditor')).strip() if c_pf else 'Auditor'
                         
+                        # Lógica de Permissão (Filiais)
                         raw_f = str(dat.get(c_fil, 'Todas')) if c_fil else 'Todas'
-                        if 'todas' in raw_f.lower() or raw_f=='nan': fils_perm = 'TODAS'
-                        else: fils_perm = [x.strip() for x in raw_f.split(',')]
+                        if 'todas' in raw_f.lower() or raw_f=='nan': 
+                            fils_perm = 'TODAS'
+                        else: 
+                            # Remove espaços ao redor de cada filial separada por vírgula
+                            fils_perm = [x.strip() for x in raw_f.split(',')]
                             
+                        # Lógica de Permissão (Padrões)
                         raw_p = str(dat.get(c_pad, 'Todos')) if c_pad else 'Todos'
-                        if 'todos' in raw_p.lower() or raw_p=='nan': pads_perm = 'TODOS'
-                        else: pads_perm = [x.strip() for x in raw_p.split(',')]
+                        if 'todos' in raw_p.lower() or raw_p=='nan': 
+                            pads_perm = 'TODOS'
+                        else: 
+                            pads_perm = [x.strip() for x in raw_p.split(',')]
 
                         st.session_state['auditor_logado'] = {'Nome': nome, 'CPF': cpf_cl}
-                        st.session_state['permissoes'] = {'filiais': fils_perm, 'padroes': pads_perm, 'perfil': perfil}
+                        st.session_state['permissoes'] = {'filiais': fils_perm, 'padroes': pads_perm, 'perfil': perf}
                         st.rerun()
                     else: st.sidebar.error("CPF não encontrado.")
     else:
@@ -163,17 +184,23 @@ if pagina == "📝 EXECUTAR DTO 01":
         
         # Filtros Blindados
         todas_f = sorted(df_treinos['Filial'].dropna().unique())
-        if perms['filiais'] == 'TODAS': opts_f = todas_f
-        else: opts_f = sorted([f for f in todas_f if f in perms['filiais']])
+        if perms['filiais'] == 'TODAS': 
+            opts_f = todas_f
+        else: 
+            # Compara com strip() para garantir
+            opts_f = sorted([f for f in todas_f if f in perms['filiais']])
+            
         sel_fil = st.sidebar.multiselect("Selecione Filiais", opts_f, default=opts_f if len(opts_f)==1 else None)
         
         # Seletor de Modo
         modo_busca = st.sidebar.radio("Modo de Busca:", ["Por Padrões", "Por Colaborador"])
         
         todas_p = sorted(df_perguntas['Codigo_Padrao'].dropna().unique())
-        if perms['padroes'] == 'TODOS': opts_p = todas_p
-        else: opts_p = sorted([p for p in todas_p if str(p) in perms['padroes']])
-        
+        if perms['padroes'] == 'TODOS': 
+            opts_p = todas_p
+        else: 
+            opts_p = sorted([p for p in todas_p if str(p) in perms['padroes']])
+            
         df_m = pd.DataFrame()
         sel_pad = []
 
@@ -256,10 +283,10 @@ if pagina == "📝 EXECUTAR DTO 01":
                         if submit_top or s_bot:
                             dh = obter_hora()
                             novos = []
-                            erro_val = False
+                            erro_validacao = False
                             for k, v in resps.items():
                                 if v == "Não Conforme" and not obss.get(k, "").strip():
-                                    erro_val = True; break
+                                    erro_validacao = True; break
                                 if v:
                                     _, pr, ir = k.split('_', 2)
                                     try: pt = df_perguntas.loc[int(ir), 'Pergunta']
@@ -270,7 +297,7 @@ if pagina == "📝 EXECUTAR DTO 01":
                                     st.session_state['resultados'].append(reg)
                                     novos.append(reg)
                             
-                            if erro_val: st.error("⛔ ERRO: Preencha observação para 'Não Conforme'.")
+                            if erro_validacao: st.error("⛔ ERRO: Preencha observação para 'Não Conforme'.")
                             elif novos:
                                 try:
                                     conn = st.connection("gsheets", type=GSheetsConnection)
@@ -285,7 +312,6 @@ if pagina == "📝 EXECUTAR DTO 01":
                                         df_novos['key'] = df_novos['CPF']+df_novos['Padrao']+df_novos['Pergunta']
                                         keys_new = df_novos['key'].tolist()
                                         df_final = pd.concat([df_n[~df_n['key'].isin(keys_new)].drop(columns=['key']), df_novos.drop(columns=['key'])], ignore_index=True)
-                                    
                                     conn.update(worksheet="Respostas_DB", data=df_final)
                                     st.success("Salvo na Nuvem!"); st.rerun()
                                 except Exception as e: st.error(f"Erro Nuvem: {e}")
@@ -355,14 +381,10 @@ elif pagina == "📊 Painel Gerencial":
                     
                     df_uni = df_treinos[(df_treinos['Filial'].isin(lf)) & (df_treinos['Codigo_Padrao'].isin(lp))]
                     meta_aud = sum(metas.get(str(r['Codigo_Padrao']),0) for _, r in df_uni.iterrows())
-                    
-                    r_aud = 0
-                    if not df_rf.empty and 'Auditor_Nome' in df_rf.columns:
-                        r_aud = len(df_rf[df_rf['Auditor_Nome'] == nm])
-                    
+                    r_aud = len(df_rf[df_rf['Auditor_Nome'] == nm]) if not df_rf.empty and 'Auditor_Nome' in df_rf.columns else 0
                     pend = max(0, meta_aud - r_aud)
-                    pct = int((r_aud/meta_aud)*100) if meta_aud > 0 else 0
-                    tbl_perf.append({"Auditor": nm, "Meta": meta_aud, "Real": r_aud, "Pend": pend, "%": f"{pct}%"})
+                    pct = int((r_aud/m_aud)*100) if m_aud > 0 else 0
+                    tbl_perf.append({"Auditor": nm, "Meta": m_aud, "Real": r_aud, "Pend": pend, "%": f"{pct}%"})
                 st.dataframe(pd.DataFrame(tbl_perf).sort_values(by="Real", ascending=False), use_container_width=True)
             except: pass
             st.markdown("---")
@@ -426,8 +448,8 @@ elif pagina == "📊 Painel Gerencial":
                 for c in sub['CPF']:
                     m = metas.get(p,0)
                     if resps_det.get((c,p),0) >= m and m>0: qok+=1
-                n_p = mapa_nomes.get(p,p)
                 pct = int((qok/qm)*100) if qm>0 else 0
+                n_p = mapa_nomes.get(p,p)
                 vol_data.append({"Padrão":p, "Desc":n_p, "Vol":qm, "Ok":qok, "%":f"{pct}%"})
             c1,c2,c3,c4 = st.columns(4)
             c1.metric("Volume Total", total_vol)
