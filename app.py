@@ -32,7 +32,7 @@ def achar_coluna(df, termo):
         if termo.lower() in col.lower(): return col
     return None
 
-# --- CACHE INTELIGENTE (AUTOMÁTICO) ---
+# --- CACHE INTELIGENTE ---
 @st.cache_data(ttl=600, show_spinner="Lendo Bases...")
 def carregar_bases_estaticas():
     try:
@@ -42,7 +42,6 @@ def carregar_bases_estaticas():
         try: df_a = conn.read(worksheet="Cadastro_Auditores")
         except: df_a = None
         
-        # Limpeza
         for df in [df_t, df_p]:
             df.dropna(how='all', inplace=True)
             df.columns = [c.strip() for c in df.columns]
@@ -71,7 +70,7 @@ st.sidebar.header("1. Conexão")
 if os.path.exists("logo.png"): st.sidebar.image("logo.png", use_container_width=True)
 else: st.sidebar.write("🏢 DTO 01 - DCS SCANIA")
 
-# Carga Inicial Automática
+# Carga Inicial
 df_treinos, df_perguntas, df_auditores, dados_ok = carregar_bases_estaticas()
 
 if dados_ok:
@@ -86,14 +85,13 @@ if dados_ok:
             df_cloud.columns = [c.strip() for c in df_cloud.columns]
             for c in df_cloud.columns: df_cloud[c] = df_cloud[c].astype(str).str.strip()
             st.session_state['resultados'] = df_cloud.to_dict('records')
-
 else:
     st.sidebar.warning("Tentando reconectar...")
     if st.sidebar.button("Forçar Recarga"): 
         st.cache_data.clear()
         st.rerun()
 
-# Upload Histórico Manual
+# Upload Histórico Manual (Backup)
 st.sidebar.markdown("---")
 uploaded_hist = st.sidebar.file_uploader("Importar Excel Local", type=["xlsx"], key="hist", accept_multiple_files=True)
 if uploaded_hist:
@@ -111,7 +109,7 @@ if uploaded_hist:
             st.sidebar.success(f"Importado: {len(novos)} regs")
     except Exception as e: st.sidebar.error(f"Erro: {e}")
 
-# Login Inteligente
+# Login
 if dados_ok:
     if df_auditores is not None:
         col_cpf = achar_coluna(df_auditores, 'cpf')
@@ -174,21 +172,20 @@ pagina = st.sidebar.radio("Menu:", ["📝 EXECUTAR DTO 01", "📊 Painel Gerenci
 if pagina == "📝 EXECUTAR DTO 01":
     if not dados_ok: st.info("⏳ Aguardando dados...")
     elif df_auditores is not None and st.session_state['auditor_logado'] is None:
-        st.warning("🔒 Acesso Bloqueado. Faça login.")
+        st.warning("🔒 Acesso Bloqueado. Faça login na barra lateral.")
     else:
         st.title("📝 EXECUTAR DTO 01")
         perms = st.session_state['permissoes']
         st.sidebar.header("Filtros Execução")
         
-        # Filtros Blindados
         todas_f = sorted(df_treinos['Filial'].dropna().unique())
         if perms['filiais'] == 'TODAS': opts_f = todas_f
         else: opts_f = sorted([f for f in todas_f if f in perms['filiais']])
         sel_fil = st.sidebar.multiselect("Selecione Filiais", opts_f, default=opts_f if len(opts_f)==1 else None)
         
-        # Seletor de Modo
+        # Modo de Busca
         modo_busca = st.sidebar.radio("Modo de Busca:", ["Por Padrões", "Por Colaborador"])
-        
+
         todas_p = sorted(df_perguntas['Codigo_Padrao'].dropna().unique())
         if perms['padroes'] == 'TODOS': opts_p = todas_p
         else: opts_p = sorted([p for p in todas_p if str(p) in perms['padroes']])
@@ -276,9 +273,17 @@ if pagina == "📝 EXECUTAR DTO 01":
                             dh = obter_hora()
                             novos = []
                             erro_val = False
+                            lista_erros = []
                             for k, v in resps.items():
                                 if v == "Não Conforme" and not obss.get(k, "").strip():
-                                    erro_val = True; break
+                                    erro_val = True
+                                    try:
+                                        idx_err = int(k.rsplit('_', 1)[-1])
+                                        txt_err = df_perguntas.loc[idx_err, 'Pergunta']
+                                        pad_err = k.split('_')[1]
+                                        lista_erros.append(f"PADRÃO {pad_err}: {txt_err}")
+                                    except: pass
+                                
                                 if v:
                                     _, pr, ir = k.split('_', 2)
                                     try: pt = df_perguntas.loc[int(ir), 'Pergunta']
@@ -289,7 +294,9 @@ if pagina == "📝 EXECUTAR DTO 01":
                                     st.session_state['resultados'].append(reg)
                                     novos.append(reg)
                             
-                            if erro_val: st.error("⛔ ERRO: Preencha observação para 'Não Conforme'.")
+                            if erro_val: 
+                                st.error("⛔ ERRO: Preencha observação para 'Não Conforme'.")
+                                for e in lista_erros: st.warning(e)
                             elif novos:
                                 try:
                                     conn = st.connection("gsheets", type=GSheetsConnection)
@@ -375,8 +382,8 @@ elif pagina == "📊 Painel Gerencial":
                     meta_aud = sum(metas.get(str(r['Codigo_Padrao']),0) for _, r in df_uni.iterrows())
                     r_aud = len(df_rf[df_rf['Auditor_Nome'] == nm]) if not df_rf.empty and 'Auditor_Nome' in df_rf.columns else 0
                     pend = max(0, meta_aud - r_aud)
-                    pct = int((r_aud/meta_aud)*100) if meta_aud > 0 else 0
-                    tbl_perf.append({"Auditor": nm, "Meta": meta_aud, "Real": r_aud, "Pend": pend, "%": f"{pct}%"})
+                    pct = int((r_aud/m_aud)*100) if m_aud > 0 else 0
+                    tbl_perf.append({"Auditor": nm, "Meta": m_aud, "Real": r_aud, "Pend": pend, "%": f"{pct}%"})
                 st.dataframe(pd.DataFrame(tbl_perf).sort_values(by="Real", ascending=False), use_container_width=True)
             except: pass
             st.markdown("---")
