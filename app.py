@@ -85,30 +85,11 @@ if dados_ok:
             df_cloud.columns = [c.strip() for c in df_cloud.columns]
             for c in df_cloud.columns: df_cloud[c] = df_cloud[c].astype(str).str.strip()
             st.session_state['resultados'] = df_cloud.to_dict('records')
-
 else:
     st.sidebar.warning("Tentando reconectar...")
     if st.sidebar.button("Forçar Recarga"): 
         st.cache_data.clear()
         st.rerun()
-
-# Upload Histórico Manual
-st.sidebar.markdown("---")
-uploaded_hist = st.sidebar.file_uploader("Importar Excel Local", type=["xlsx"], key="hist", accept_multiple_files=True)
-if uploaded_hist:
-    dfs = []
-    try:
-        for f in uploaded_hist:
-            d = pd.read_excel(f)
-            d.columns = [c.strip() for c in d.columns]
-            for c in ['CPF','Padrao','Pergunta','Auditor_CPF','Filial']:
-                if c in d.columns: d[c] = d[c].astype(str).str.strip()
-            dfs.append(d)
-        if dfs:
-            novos = pd.concat(dfs, ignore_index=True).to_dict('records')
-            st.session_state['resultados'].extend(novos)
-            st.sidebar.success(f"Importado: {len(novos)} regs")
-    except Exception as e: st.sidebar.error(f"Erro: {e}")
 
 # Login
 if dados_ok:
@@ -173,7 +154,7 @@ pagina = st.sidebar.radio("Menu:", ["📝 EXECUTAR DTO 01", "📊 Painel Gerenci
 if pagina == "📝 EXECUTAR DTO 01":
     if not dados_ok: st.info("⏳ Aguardando dados...")
     elif df_auditores is not None and st.session_state['auditor_logado'] is None:
-        st.warning("🔒 Acesso Bloqueado. Faça login na barra lateral.")
+        st.warning("🔒 Acesso Bloqueado. Faça login.")
     else:
         st.title("📝 EXECUTAR DTO 01")
         perms = st.session_state['permissoes']
@@ -232,7 +213,7 @@ if pagina == "📝 EXECUTAR DTO 01":
                     with st.expander(f"{icon} {nome} | {fil} ({qtd_pads} Padrões | {resp_tot}/{meta_tot})"):
                         with st.form(key=f"f_{cpf}"):
                             c_top, _ = st.columns([1, 4])
-                            s_top = c_top.form_submit_button("💾 Salvar na Nuvem", key=f"t_{cpf}")
+                            submit_top = c_top.form_submit_button("💾 Salvar na Nuvem", key=f"t_{cpf}")
                             st.markdown("---")
                             resps, obss = {}, {}
                             pads_orig = df_m[df_m['CPF'].astype(str).str.strip() == cpf]['Codigo_Padrao'].unique()
@@ -251,23 +232,13 @@ if pagina == "📝 EXECUTAR DTO 01":
                             
                             s_bot = st.form_submit_button("💾 Salvar na Nuvem", key=f"b_{cpf}")
                             
-                            if s_top or s_bot:
+                            if submit_top or s_bot:
                                 dh = obter_hora()
                                 novos = []
-                                erro_validacao = False
-                                lista_erros = []
-
+                                erro_val = False
                                 for k, v in resps.items():
-                                    # VALIDAÇÃO DE REGRA
                                     if v == "Não Conforme" and not obss.get(k, "").strip():
-                                        erro_validacao = True
-                                        # Tenta pegar o nome da pergunta para o erro
-                                        try:
-                                            idx_err = int(k.rsplit('_', 1)[-1])
-                                            txt_err = df_perguntas.loc[idx_err, 'Pergunta']
-                                            lista_erros.append(txt_err)
-                                        except: pass
-                                    
+                                        erro_val = True; break
                                     if v:
                                         _, pr, ir = k.split('_', 2)
                                         try: pt = df_perguntas.loc[int(ir), 'Pergunta']
@@ -278,12 +249,7 @@ if pagina == "📝 EXECUTAR DTO 01":
                                         st.session_state['resultados'].append(reg)
                                         novos.append(reg)
                                 
-                                if erro_validacao:
-                                    st.error("⛔ ERRO: Justificativa obrigatória para 'Não Conforme'!")
-                                    for e in lista_erros: st.warning(f"Falta Obs em: {e}")
-                                    # Remove os que tentou salvar da memória local (rollback)
-                                    # (Como recarregamos a pagina no final do sucesso, aqui apenas avisamos e não salvamos na nuvem)
-                                
+                                if erro_val: st.error("⛔ ERRO: Preencha observação para 'Não Conforme'.")
                                 elif novos:
                                     try:
                                         conn = st.connection("gsheets", type=GSheetsConnection)
@@ -298,7 +264,6 @@ if pagina == "📝 EXECUTAR DTO 01":
                                             df_novos['key'] = df_novos['CPF']+df_novos['Padrao']+df_novos['Pergunta']
                                             keys_new = df_novos['key'].tolist()
                                             df_final = pd.concat([df_n[~df_n['key'].isin(keys_new)].drop(columns=['key']), df_novos.drop(columns=['key'])], ignore_index=True)
-                                        
                                         conn.update(worksheet="Respostas_DB", data=df_final)
                                         st.success("Salvo na Nuvem!"); st.rerun()
                                     except Exception as e: st.error(f"Erro Nuvem: {e}")
@@ -341,6 +306,7 @@ elif pagina == "📊 Painel Gerencial":
                 df_rf = df_res[(df_res['Filial'].isin(f_sel)) & (df_res['Padrao'].isin(p_sel))]
         metas = df_perguntas.groupby('Codigo_Padrao').size().to_dict()
 
+        # PERFORMANCE AUDITOR (GESTOR)
         if perms.get('perfil') == 'Gestor' and df_auditores is not None:
             st.subheader("🏆 Performance Operacional")
             try:
@@ -368,7 +334,7 @@ elif pagina == "📊 Painel Gerencial":
                     df_uni = df_treinos[(df_treinos['Filial'].isin(lf)) & (df_treinos['Codigo_Padrao'].isin(lp))]
                     meta_aud = sum(metas.get(str(r['Codigo_Padrao']),0) for _, r in df_uni.iterrows())
                     r_aud = len(df_rf[df_rf['Auditor_Nome'] == nm]) if not df_rf.empty and 'Auditor_Nome' in df_rf.columns else 0
-                    pend = max(0, meta_aud - r_aud)
+                    pend = max(0, m_aud - r_aud)
                     pct = int((r_aud/m_aud)*100) if m_aud > 0 else 0
                     tbl_perf.append({"Auditor": nm, "Meta": m_aud, "Real": r_aud, "Pend": pend, "%": f"{pct}%"})
                 st.dataframe(pd.DataFrame(tbl_perf).sort_values(by="Real", ascending=False), use_container_width=True)
