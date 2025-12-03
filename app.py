@@ -97,14 +97,13 @@ if dados_ok:
             df_cloud.columns = [c.strip() for c in df_cloud.columns]
             for c in df_cloud.columns: df_cloud = limpar_texto(df_cloud, c)
             st.session_state['resultados'] = df_cloud.to_dict('records')
-            st.sidebar.info(f"☁️ {len(st.session_state['resultados'])} registros.")
 else:
     st.sidebar.warning("Tentando reconectar...")
     if st.sidebar.button("Forçar Recarga"): 
         st.cache_data.clear()
         st.rerun()
 
-# Login Inteligente (Corrigido)
+# Login Inteligente
 if dados_ok:
     if df_auditores is not None:
         col_cpf = achar_coluna(df_auditores, 'cpf')
@@ -114,7 +113,6 @@ if dados_ok:
                 user = st.session_state['auditor_logado']
                 perms = st.session_state['permissoes']
                 st.sidebar.success(f"👤 {user['Nome']}")
-                
                 if st.sidebar.button("Sair"):
                     st.session_state['auditor_logado'] = None
                     st.session_state['permissoes'] = {'filiais': [], 'padroes': [], 'perfil': ''}
@@ -152,9 +150,6 @@ if dados_ok:
                         st.session_state['permissoes'] = {'filiais': fils_perm, 'padroes': pads_perm, 'perfil': perfil}
                         st.rerun()
                     else: st.sidebar.error("CPF não encontrado.")
-        else:
-            st.session_state['auditor_logado'] = {'Nome': 'Geral', 'CPF': '000'}
-            st.session_state['permissoes'] = {'filiais': 'TODAS', 'padroes': 'TODOS', 'perfil': 'Gestor'}
     else:
         st.session_state['auditor_logado'] = {'Nome': 'Geral', 'CPF': '000'}
         st.session_state['permissoes'] = {'filiais': 'TODAS', 'padroes': 'TODOS', 'perfil': 'Gestor'}
@@ -293,20 +288,23 @@ if pagina == "📝 EXECUTAR DTO 01":
                         if submit_top or s_bot:
                             dh = obter_hora()
                             novos = []
+                            erro_val = False
                             lista_erros = []
                             for k, v in resps.items():
                                 if v == "Não Conforme" and not obss.get(k, "").strip():
+                                    erro_val = True
                                     try:
-                                        idx_err = int(k.rsplit('_', 1)[-1])
-                                        c_p_err = achar_coluna(df_perguntas, 'pergunta')
-                                        txt_err = df_perguntas.loc[idx_err, c_p_err]
-                                        lista_erros.append(f"**{k.split('_')[1]}**: {txt_err}")
+                                        idx_e = int(k.rsplit('_', 1)[-1])
+                                        c_pg_err = achar_coluna(df_perguntas, 'pergunta')
+                                        txt_e = df_perguntas.loc[idx_e, c_pg_err]
+                                        pad_e = k.split('_')[1]
+                                        lista_erros.append(f"**PADRÃO {pad_e}:** {txt_e}")
                                     except: lista_erros.append("Item sem observação")
                                 
                                 if v:
                                     _, pr, ir = k.split('_', 2)
-                                    c_perg = achar_coluna(df_perguntas, 'pergunta')
-                                    try: pt = df_perguntas.loc[int(ir), c_perg]
+                                    c_pg = achar_coluna(df_perguntas, 'pergunta')
+                                    try: pt = df_perguntas.loc[int(ir), c_pg]
                                     except: pt = "Erro"
                                     st.session_state['resultados'] = [r for r in st.session_state['resultados'] if not (str(r.get('CPF','')).strip()==cpf and str(r.get('Padrao','')).strip()==str(pr).strip() and str(r.get('Pergunta','')).strip()==pt)]
                                     reg = {"Data":dh, "Filial":fil, "Funcionario":nome, "CPF":cpf, "Padrao":str(pr).strip(), "Pergunta":pt, "Resultado":v, "Observacao":obss.get(k,"")}
@@ -314,10 +312,10 @@ if pagina == "📝 EXECUTAR DTO 01":
                                     st.session_state['resultados'].append(reg)
                                     novos.append(reg)
                             
-                            if lista_erros:
-                                msg = "⛔ **ERRO: Justifique os itens Não Conforme:**\n\n" + "\n".join([f"- {e}" for e in lista_erros])
-                                alerta_topo.error(msg)
-                                alerta_fim.error(msg)
+                            if erro_val:
+                                msg_erro = "⛔ **ERRO: PREENCHIMENTO OBRIGATÓRIO!**\n\nVocê marcou 'Não Conforme' nos itens abaixo sem justificativa:\n\n" + "\n".join([f"- {e}" for e in lista_erros])
+                                alerta_topo.error(msg_erro)
+                                alerta_fim.error(msg_erro)
                             elif novos:
                                 try:
                                     conn = st.connection("gsheets", type=GSheetsConnection)
