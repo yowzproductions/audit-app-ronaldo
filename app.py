@@ -346,10 +346,12 @@ elif pagina == "📊 Painel Gerencial":
     else:
         perms = st.session_state['permissoes']
         
+        # --- DEFINIÇÃO DE COLUNAS (CORRIGIDO) ---
         c_fil_tr = achar_coluna(df_treinos, 'filial')
-        c_pad_pg = achar_coluna(df_perguntas, 'padrao')
+        c_pad_tr = achar_coluna(df_treinos, 'padrao') # <--- ESTA LINHA FALTAVA
         c_cpf_tr = achar_coluna(df_treinos, 'cpf')
         c_nom_tr = achar_coluna(df_treinos, 'nome')
+        c_pad_pg = achar_coluna(df_perguntas, 'padrao')
 
         with st.expander("🔍 Raio-X", expanded=False):
             colisao = df_treinos.groupby(c_cpf_tr)[c_nom_tr].nunique()
@@ -358,6 +360,8 @@ elif pagina == "📊 Painel Gerencial":
             else: st.success("Base OK.")
 
         st.sidebar.header("Filtros Dashboard")
+        
+        # Filtros Dinâmicos
         todas_f = sorted(df_treinos[c_fil_tr].dropna().unique())
         if perms['filiais'] == 'TODAS': opts_f = todas_f
         else: opts_f = sorted([f for f in todas_f if f.strip() in perms['filiais']])
@@ -370,21 +374,38 @@ elif pagina == "📊 Painel Gerencial":
         
         st.markdown("---")
         
+        # Agora c_pad_tr existe para fazer o filtro
         df_esc = df_treinos[(df_treinos[c_fil_tr].isin(f_sel)) & (df_treinos[c_pad_tr].isin(p_sel))]
+        
         df_res = pd.DataFrame(st.session_state['resultados'])
         df_rf = pd.DataFrame()
+        
+        # Mapeia colunas do resultado
+        c_fil_rs = None
+        c_pad_rs = None
+        c_cpf_rs = None
+        
         if not df_res.empty:
             c_fil_rs = achar_coluna(df_res, 'filial')
             c_pad_rs = achar_coluna(df_res, 'padrao')
+            c_cpf_rs = achar_coluna(df_res, 'cpf')
+            c_aud_nm = achar_coluna(df_res, 'auditor_nome')
+            
             if c_fil_rs and c_pad_rs:
                 df_rf = df_res[(df_res[c_fil_rs].isin(f_sel)) & (df_res[c_pad_rs].isin(p_sel))]
+        
         metas = df_perguntas.groupby(c_pad_pg).size().to_dict()
 
+        # PERFORMANCE AUDITOR (GESTOR)
         if perms.get('perfil') == 'Gestor' and df_auditores is not None:
             st.subheader("🏆 Performance Operacional")
             try:
                 tbl_perf = []
                 l_auds = st.session_state.get('lista_auditores', [])
+                if not l_auds:
+                     cn = achar_coluna(df_auditores, 'nome')
+                     if cn: l_auds = df_auditores[cn].unique().tolist()
+
                 for nm in l_auds:
                     da = pd.Series()
                     cn = achar_coluna(df_auditores, 'nome')
@@ -404,7 +425,6 @@ elif pagina == "📊 Painel Gerencial":
                     meta_aud = sum(metas.get(str(r[c_pad_tr]),0) for _, r in df_uni.iterrows())
                     
                     r_aud = 0
-                    c_aud_nm = achar_coluna(df_res, 'auditor_nome')
                     if not df_rf.empty and c_aud_nm:
                         r_aud = len(df_rf[df_rf[c_aud_nm] == nm])
                     
@@ -424,7 +444,6 @@ elif pagina == "📊 Painel Gerencial":
             counts = {'P':0, 'A':0, 'C':0}
             data_list = []
             resps = {}
-            c_cpf_rs = achar_coluna(df_rf, 'cpf')
             if not df_rf.empty and c_cpf_rs: resps = df_rf.groupby(c_cpf_rs).size().to_dict()
             
             for cpf in df_esc[c_cpf_tr].unique():
@@ -462,10 +481,8 @@ elif pagina == "📊 Painel Gerencial":
                 tn = df_perguntas[[c_pad_pg, c_nom_pg]].drop_duplicates()
                 mapa_nomes = pd.Series(tn[c_nom_pg].values, index=tn[c_pad_pg].astype(str).str.strip()).to_dict()
             r_det = {}
-            if not df_rf.empty: 
-                c_cpf_rs = achar_coluna(df_rf, 'cpf')
-                c_pad_rs = achar_coluna(df_rf, 'padrao')
-                if c_cpf_rs and c_pad_rs: r_det = df_rf.groupby([c_cpf_rs, c_pad_rs]).size().to_dict()
+            if not df_rf.empty and c_cpf_rs and c_pad_rs: r_det = df_rf.groupby([c_cpf_rs, c_pad_rs]).size().to_dict()
+            
             for _, r in df_esc.iterrows():
                 c, p = r[c_cpf_tr], r[c_pad_tr]
                 m = metas.get(p,0)
@@ -473,6 +490,7 @@ elif pagina == "📊 Painel Gerencial":
                 if rv == 0: counts_v['Z']+=1
                 elif rv >= m and m>0: counts_v['C']+=1
                 else: counts_v['I']+=1
+            
             for p in df_esc[c_pad_tr].unique():
                 sub = df_esc[df_esc[c_pad_tr]==p]
                 qm = len(sub)
