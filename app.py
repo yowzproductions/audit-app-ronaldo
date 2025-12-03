@@ -90,7 +90,7 @@ if dados_ok:
         c_nome = achar_coluna(df_auditores, 'nome')
         if c_nome: st.session_state['lista_auditores'] = df_auditores[c_nome].unique().tolist()
     
-    # Sincronia Automática da Nuvem
+    # Sincronia Automática
     if not st.session_state['resultados']:
         df_cloud = carregar_respostas_nuvem()
         if not df_cloud.empty:
@@ -104,7 +104,7 @@ else:
         st.cache_data.clear()
         st.rerun()
 
-# Login Inteligente
+# Login Inteligente (Corrigido)
 if dados_ok:
     if df_auditores is not None:
         col_cpf = achar_coluna(df_auditores, 'cpf')
@@ -152,11 +152,14 @@ if dados_ok:
                         st.session_state['permissoes'] = {'filiais': fils_perm, 'padroes': pads_perm, 'perfil': perfil}
                         st.rerun()
                     else: st.sidebar.error("CPF não encontrado.")
+        else:
+            st.session_state['auditor_logado'] = {'Nome': 'Geral', 'CPF': '000'}
+            st.session_state['permissoes'] = {'filiais': 'TODAS', 'padroes': 'TODOS', 'perfil': 'Gestor'}
     else:
         st.session_state['auditor_logado'] = {'Nome': 'Geral', 'CPF': '000'}
         st.session_state['permissoes'] = {'filiais': 'TODAS', 'padroes': 'TODOS', 'perfil': 'Gestor'}
 
-# Download (Backup)
+# Download
 if st.session_state['resultados']:
     st.sidebar.markdown("---")
     st.sidebar.write("📂 **Backup**")
@@ -264,6 +267,7 @@ if pagina == "📝 EXECUTAR DTO 01":
                 
                 with st.expander(f"{icon} {nome} | {fil} ({qtd_pads} Padrões | {resp_tot}/{meta_total})", expanded=abrir_auto):
                     with st.form(key=f"f_{cpf}"):
+                        alerta_topo = st.empty()
                         c_top, _ = st.columns([1, 4])
                         submit_top = c_top.form_submit_button("💾 Salvar na Nuvem", key=f"t_{cpf}")
                         st.markdown("---")
@@ -283,28 +287,26 @@ if pagina == "📝 EXECUTAR DTO 01":
                                 obss[k_wd] = st.text_input("Obs (Obrigatório se NC)", value=(prev['obs'] if prev else ""), key=f"o_{k_wd}")
                                 st.markdown("---")
                         
+                        alerta_fim = st.empty()
                         s_bot = st.form_submit_button("💾 Salvar na Nuvem", key=f"b_{cpf}")
                         
                         if submit_top or s_bot:
                             dh = obter_hora()
                             novos = []
-                            erro_val = False
                             lista_erros = []
                             for k, v in resps.items():
                                 if v == "Não Conforme" and not obss.get(k, "").strip():
-                                    erro_val = True
                                     try:
-                                        idx_e = int(k.rsplit('_', 1)[-1])
-                                        c_pg_err = achar_coluna(df_perguntas, 'pergunta')
-                                        txt_e = df_perguntas.loc[idx_e, c_pg_err]
-                                        pad_e = k.split('_')[1]
-                                        lista_erros.append(f"PADRÃO {pad_e}: {txt_e}")
+                                        idx_err = int(k.rsplit('_', 1)[-1])
+                                        c_p_err = achar_coluna(df_perguntas, 'pergunta')
+                                        txt_err = df_perguntas.loc[idx_err, c_p_err]
+                                        lista_erros.append(f"**{k.split('_')[1]}**: {txt_err}")
                                     except: lista_erros.append("Item sem observação")
                                 
                                 if v:
                                     _, pr, ir = k.split('_', 2)
-                                    c_pg = achar_coluna(df_perguntas, 'pergunta')
-                                    try: pt = df_perguntas.loc[int(ir), c_pg]
+                                    c_perg = achar_coluna(df_perguntas, 'pergunta')
+                                    try: pt = df_perguntas.loc[int(ir), c_perg]
                                     except: pt = "Erro"
                                     st.session_state['resultados'] = [r for r in st.session_state['resultados'] if not (str(r.get('CPF','')).strip()==cpf and str(r.get('Padrao','')).strip()==str(pr).strip() and str(r.get('Pergunta','')).strip()==pt)]
                                     reg = {"Data":dh, "Filial":fil, "Funcionario":nome, "CPF":cpf, "Padrao":str(pr).strip(), "Pergunta":pt, "Resultado":v, "Observacao":obss.get(k,"")}
@@ -312,9 +314,10 @@ if pagina == "📝 EXECUTAR DTO 01":
                                     st.session_state['resultados'].append(reg)
                                     novos.append(reg)
                             
-                            if erro_val:
-                                st.error("⛔ ERRO: Preencha observação para 'Não Conforme':")
-                                for e in lista_erros: st.warning(e)
+                            if lista_erros:
+                                msg = "⛔ **ERRO: Justifique os itens Não Conforme:**\n\n" + "\n".join([f"- {e}" for e in lista_erros])
+                                alerta_topo.error(msg)
+                                alerta_fim.error(msg)
                             elif novos:
                                 try:
                                     conn = st.connection("gsheets", type=GSheetsConnection)
