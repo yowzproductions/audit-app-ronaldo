@@ -104,7 +104,7 @@ else:
         st.cache_data.clear()
         st.rerun()
 
-# Login Inteligente (Com Correção de Variável)
+# Login Inteligente
 if dados_ok:
     if df_auditores is not None:
         col_cpf = achar_coluna(df_auditores, 'cpf')
@@ -134,7 +134,6 @@ if dados_ok:
                         c_pad = achar_coluna(df_auditores, 'padrao')
 
                         nome = dados[c_nome]
-                        # CORREÇÃO: Nome da variável ajustado para 'perfil'
                         perfil = str(dados.get(c_perf, 'Auditor')).strip() if c_perf else 'Auditor'
                         
                         raw_f = str(dados.get(c_fil, 'Todas')) if c_fil else 'Todas'
@@ -150,13 +149,9 @@ if dados_ok:
                             pads_perm = [x.strip() for x in raw_p.split(',')]
 
                         st.session_state['auditor_logado'] = {'Nome': nome, 'CPF': cpf_clean}
-                        # Agora a variável 'perfil' existe
                         st.session_state['permissoes'] = {'filiais': fils_perm, 'padroes': pads_perm, 'perfil': perfil}
                         st.rerun()
                     else: st.sidebar.error("CPF não encontrado.")
-        else:
-            st.session_state['auditor_logado'] = {'Nome': 'Geral', 'CPF': '000'}
-            st.session_state['permissoes'] = {'filiais': 'TODAS', 'padroes': 'TODOS', 'perfil': 'Gestor'}
     else:
         st.session_state['auditor_logado'] = {'Nome': 'Geral', 'CPF': '000'}
         st.session_state['permissoes'] = {'filiais': 'TODAS', 'padroes': 'TODOS', 'perfil': 'Gestor'}
@@ -233,7 +228,6 @@ if pagina == "📝 EXECUTAR DTO 01":
             if modo_busca == "Por Padrões":
                 rank = rank.sort_values(by=['Qtd',c_fil_tr], ascending=[False,True])
             
-            if 'pagina_atual' not in st.session_state: st.session_state['pagina_atual'] = 0
             tot_p = (len(rank)-1)//10 + 1
             c1,c2,c3 = st.columns([1,3,1])
             if c1.button("⬅️") and st.session_state['pagina_atual']>0: st.session_state['pagina_atual']-=1; st.rerun()
@@ -293,13 +287,21 @@ if pagina == "📝 EXECUTAR DTO 01":
                             dh = obter_hora()
                             novos = []
                             erro_val = False
+                            lista_erros = []
                             for k, v in resps.items():
                                 if v == "Não Conforme" and not obss.get(k, "").strip():
-                                    erro_val = True; break
+                                    erro_val = True
+                                    try:
+                                        idx_e = int(k.rsplit('_', 1)[-1])
+                                        c_pg = achar_coluna(df_perguntas, 'pergunta')
+                                        txt_e = df_perguntas.loc[idx_e, c_pg]
+                                        pad_e = k.split('_')[1]
+                                        lista_erros.append(f"PADRÃO {pad_e}: {txt_e}")
+                                    except: pass
                                 if v:
                                     _, pr, ir = k.split('_', 2)
-                                    c_perg = achar_coluna(df_perguntas, 'pergunta')
-                                    try: pt = df_perguntas.loc[int(ir), c_perg]
+                                    c_pg = achar_coluna(df_perguntas, 'pergunta')
+                                    try: pt = df_perguntas.loc[int(ir), c_pg]
                                     except: pt = "Erro"
                                     st.session_state['resultados'] = [r for r in st.session_state['resultados'] if not (str(r.get('CPF','')).strip()==cpf and str(r.get('Padrao','')).strip()==str(pr).strip() and str(r.get('Pergunta','')).strip()==pt)]
                                     reg = {"Data":dh, "Filial":fil, "Funcionario":nome, "CPF":cpf, "Padrao":str(pr).strip(), "Pergunta":pt, "Resultado":v, "Observacao":obss.get(k,"")}
@@ -307,7 +309,9 @@ if pagina == "📝 EXECUTAR DTO 01":
                                     st.session_state['resultados'].append(reg)
                                     novos.append(reg)
                             
-                            if erro_val: st.error("⛔ ERRO: Preencha observação para 'Não Conforme'.")
+                            if erro_val:
+                                st.error("⛔ ERRO: Justificativa obrigatória para 'Não Conforme':")
+                                for e in lista_erros: st.warning(e)
                             elif novos:
                                 try:
                                     conn = st.connection("gsheets", type=GSheetsConnection)
@@ -454,8 +458,10 @@ elif pagina == "📊 Painel Gerencial":
                 tn = df_perguntas[[c_pad_pg, c_nom_pg]].drop_duplicates()
                 mapa_nomes = pd.Series(tn[c_nom_pg].values, index=tn[c_pad_pg].astype(str).str.strip()).to_dict()
             r_det = {}
-            if not df_rf.empty and c_cpf_rs and c_pad_rs: r_det = df_rf.groupby([c_cpf_rs, c_pad_rs]).size().to_dict()
-            
+            if not df_rf.empty: 
+                c_cpf_rs = achar_coluna(df_rf, 'cpf')
+                c_pad_rs = achar_coluna(df_rf, 'padrao')
+                if c_cpf_rs and c_pad_rs: r_det = df_rf.groupby([c_cpf_rs, c_pad_rs]).size().to_dict()
             for _, r in df_esc.iterrows():
                 c, p = r[c_cpf_tr], r[c_pad_tr]
                 m = metas.get(p,0)
@@ -463,7 +469,6 @@ elif pagina == "📊 Painel Gerencial":
                 if rv == 0: counts_v['Z']+=1
                 elif rv >= m and m>0: counts_v['C']+=1
                 else: counts_v['I']+=1
-            
             for p in df_esc[c_pad_tr].unique():
                 sub = df_esc[df_esc[c_pad_tr]==p]
                 qm = len(sub)
