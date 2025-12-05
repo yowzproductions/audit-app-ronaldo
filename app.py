@@ -156,19 +156,6 @@ if dados_ok:
         st.session_state['auditor_logado'] = {'Nome': 'Geral', 'CPF': '000'}
         st.session_state['permissoes'] = {'filiais': 'TODAS', 'padroes': 'TODOS', 'perfil': 'Gestor'}
 
-# Download (Apenas Backup, sem upload)
-if st.session_state['resultados']:
-    st.sidebar.markdown("---")
-    st.sidebar.write("📂 **Exportar Dados**")
-    df_dw = pd.DataFrame(st.session_state['resultados'])
-    perms = st.session_state['permissoes']
-    if st.session_state['auditor_logado'] and perms.get('perfil')!='Gestor' and perms.get('filiais')!='TODAS':
-        c_fil_res = achar_coluna(df_dw, 'filial')
-        if c_fil_res: df_dw = df_dw[df_dw[c_fil_res].isin(perms['filiais'])]
-    
-    excel_data = gerar_excel(df_dw)
-    if excel_data: st.sidebar.download_button("📥 Baixar Planilha", excel_data, "Backup_Auditoria.xlsx", mime="application/vnd.ms-excel")
-
 st.sidebar.markdown("---")
 pagina = st.sidebar.radio("Menu:", ["📝 EXECUTAR DTO 01", "📊 Painel Gerencial"])
 # ================= EXECUÇÃO =================
