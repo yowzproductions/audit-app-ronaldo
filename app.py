@@ -90,13 +90,14 @@ if dados_ok:
         c_nome = achar_coluna(df_auditores, 'nome')
         if c_nome: st.session_state['lista_auditores'] = df_auditores[c_nome].unique().tolist()
     
-    # Sincronia Automática
+    # Sincronia Automática da Nuvem
     if not st.session_state['resultados']:
         df_cloud = carregar_respostas_nuvem()
         if not df_cloud.empty:
             df_cloud.columns = [c.strip() for c in df_cloud.columns]
             for c in df_cloud.columns: df_cloud = limpar_texto(df_cloud, c)
             st.session_state['resultados'] = df_cloud.to_dict('records')
+            st.sidebar.info(f"☁️ {len(st.session_state['resultados'])} registros.")
 else:
     st.sidebar.warning("Tentando reconectar...")
     if st.sidebar.button("Forçar Recarga"): 
@@ -113,6 +114,7 @@ if dados_ok:
                 user = st.session_state['auditor_logado']
                 perms = st.session_state['permissoes']
                 st.sidebar.success(f"👤 {user['Nome']}")
+                
                 if st.sidebar.button("Sair"):
                     st.session_state['auditor_logado'] = None
                     st.session_state['permissoes'] = {'filiais': [], 'padroes': [], 'perfil': ''}
@@ -154,10 +156,10 @@ if dados_ok:
         st.session_state['auditor_logado'] = {'Nome': 'Geral', 'CPF': '000'}
         st.session_state['permissoes'] = {'filiais': 'TODAS', 'padroes': 'TODOS', 'perfil': 'Gestor'}
 
-# Download
+# Download (Apenas Backup, sem upload)
 if st.session_state['resultados']:
     st.sidebar.markdown("---")
-    st.sidebar.write("📂 **Backup**")
+    st.sidebar.write("📂 **Exportar Dados**")
     df_dw = pd.DataFrame(st.session_state['resultados'])
     perms = st.session_state['permissoes']
     if st.session_state['auditor_logado'] and perms.get('perfil')!='Gestor' and perms.get('filiais')!='TODAS':
