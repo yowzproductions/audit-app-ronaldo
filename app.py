@@ -507,11 +507,3 @@ elif pagina == "📊 Painel Gerencial":
             out = BytesIO()
             with pd.ExcelWriter(out, engine='xlsxwriter') as writer: df_res.to_excel(writer, index=False)
             b1.download_button("📥 Baixar Master", out.getvalue(), f"Master_{obter_hora().replace('/','-')}.xlsx")
-        
-        if b2.button("🗑️ Limpar Tudo", key="trash_dash"):
-            try:
-                conn = st.connection("gsheets", type=GSheetsConnection)
-                conn.update(worksheet="Respostas_DB", data=pd.DataFrame(columns=['Data']))
-                st.session_state['resultados'] = []
-                st.rerun()
-            except: pass
