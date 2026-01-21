@@ -294,8 +294,7 @@ if pagina == "📝 EXECUTAR DTO 01":
                         
                         alerta_fim = st.empty()
                         s_bot = st.form_submit_button("💾 Salvar na Nuvem", key=f"b_{cpf}")
-                        
-                       if submit_top or s_bot:
+                        if submit_top or s_bot:
                             dh = obter_hora()
                             novos = []
                             erro_val = False
