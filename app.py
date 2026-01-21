@@ -3,6 +3,7 @@ import pandas as pd
 from io import BytesIO
 from datetime import datetime
 import os
+import gspread
 import pytz
 from streamlit_gsheets import GSheetsConnection
 
