@@ -74,8 +74,28 @@ def carregar_bases_estaticas():
 def carregar_respostas_nuvem():
     try:
         conn = st.connection("gsheets", type=GSheetsConnection)
-        return conn.read(worksheet="Respostas_DB", ttl=5)
-    except: return pd.DataFrame()
+        # Lemos tudo (TTL=0 garante que ele pegue o dado que acabamos de salvar)
+        df = conn.read(worksheet="Respostas_DB", ttl=0)
+        
+        if df.empty: return pd.DataFrame()
+
+        # 1. Limpeza de Colunas (Padrão)
+        df.columns = [c.strip() for c in df.columns]
+        for c in ['CPF', 'Padrao', 'Pergunta', 'Data']:
+            if c in df.columns:
+                df[c] = df[c].astype(str).str.replace(r'\.0$', '', regex=True).str.strip()
+
+        # 2. A MÁGICA (Deduplicação Inteligente)
+        # Remove duplicatas baseadas na chave composta (Quem + Onde + O Que).
+        # 'keep=last' mantém a ÚLTIMA linha encontrada na planilha (a mais recente).
+        if not df.empty and 'CPF' in df.columns and 'Padrao' in df.columns and 'Pergunta' in df.columns:
+            df = df.drop_duplicates(subset=['CPF', 'Padrao', 'Pergunta'], keep='last')
+        
+        return df
+
+    except Exception as e:
+        # st.error(f"Erro silencioso nuvem: {e}") # Comentado para não sujar a tela
+        return pd.DataFrame()
 
 # --- 4. BARRA LATERAL ---
 st.sidebar.header("1. Conexão")
@@ -275,12 +295,15 @@ if pagina == "📝 EXECUTAR DTO 01":
                         alerta_fim = st.empty()
                         s_bot = st.form_submit_button("💾 Salvar na Nuvem", key=f"b_{cpf}")
                         
-                        if submit_top or s_bot:
+                       if submit_top or s_bot:
                             dh = obter_hora()
                             novos = []
                             erro_val = False
                             lista_erros = []
+                            
+                            # --- 1. PARTE QUE MANTIVEMOS (Validação e Memória) ---
                             for k, v in resps.items():
+                                # Verifica se é NC sem observação
                                 if v == "Não Conforme" and not obss.get(k, "").strip():
                                     erro_val = True
                                     try:
@@ -296,33 +319,57 @@ if pagina == "📝 EXECUTAR DTO 01":
                                     c_pg = achar_coluna(df_perguntas, 'pergunta')
                                     try: pt = df_perguntas.loc[int(ir), c_pg]
                                     except: pt = "Erro"
+                                    
+                                    # Limpa resposta anterior da memória local
                                     st.session_state['resultados'] = [r for r in st.session_state['resultados'] if not (str(r.get('CPF','')).strip()==cpf and str(r.get('Padrao','')).strip()==str(pr).strip() and str(r.get('Pergunta','')).strip()==pt)]
+                                    
                                     reg = {"Data":dh, "Filial":fil, "Funcionario":nome, "CPF":cpf, "Padrao":str(pr).strip(), "Pergunta":pt, "Resultado":v, "Observacao":obss.get(k,"")}
                                     if st.session_state['auditor_logado']: reg.update({"Auditor_Nome":st.session_state['auditor_logado']['Nome'], "Auditor_CPF":st.session_state['auditor_logado']['CPF']})
+                                    
                                     st.session_state['resultados'].append(reg)
                                     novos.append(reg)
                             
+                            # Exibe erros se houver
                             if erro_val:
                                 msg_erro = "⛔ **ERRO: PREENCHIMENTO OBRIGATÓRIO!**\n\nVocê marcou 'Não Conforme' nos itens abaixo sem justificativa:\n\n" + "\n".join([f"- {e}" for e in lista_erros])
                                 alerta_topo.error(msg_erro)
                                 alerta_fim.error(msg_erro)
+                            
+                            # --- 2. PARTE QUE MUDAMOS (O Salvamento Seguro - Append) ---
                             elif novos:
                                 try:
-                                    conn = st.connection("gsheets", type=GSheetsConnection)
-                                    df_n = conn.read(worksheet="Respostas_DB", ttl=0)
-                                    if df_n.empty: df_final = pd.DataFrame(novos)
-                                    else:
-                                        df_n.columns = [c.strip() for c in df_n.columns]
-                                        for c in ['CPF', 'Padrao', 'Pergunta']: 
-                                            if c in df_n.columns: df_n[c] = df_n[c].astype(str).str.replace(r'\.0$', '', regex=True).str.strip()
-                                        df_novos = pd.DataFrame(novos)
-                                        df_n['key'] = df_n['CPF']+df_n['Padrao']+df_n['Pergunta']
-                                        df_novos['key'] = df_novos['CPF']+df_novos['Padrao']+df_novos['Pergunta']
-                                        keys_new = df_novos['key'].tolist()
-                                        df_final = pd.concat([df_n[~df_n['key'].isin(keys_new)].drop(columns=['key']), df_novos.drop(columns=['key'])], ignore_index=True)
-                                    conn.update(worksheet="Respostas_DB", data=df_final)
-                                    st.success("Salvo na Nuvem!"); st.rerun()
-                                except Exception as e: st.error(f"Erro Nuvem: {e}")
+                                    # Preparar dados para o formato de lista
+                                    colunas_ordem = ["Data", "Filial", "Funcionario", "CPF", "Padrao", "Pergunta", "Resultado", "Observacao", "Auditor_Nome", "Auditor_CPF"]
+                                    
+                                    valores_para_adicionar = []
+                                    for item in novos:
+                                        linha = [str(item.get(c, "")) for c in colunas_ordem]
+                                        valores_para_adicionar.append(linha)
+
+                                    # Conexão Direta usando gspread (Mais Rápido e Seguro)
+                                    creds = st.secrets["connections"]["gsheets"]
+                                    gc = gspread.service_account_from_dict(creds)
+                                    
+                                    # Abrir planilha pela URL
+                                    sh = gc.open_by_url(creds["spreadsheet"])
+                                    wks = sh.worksheet("Respostas_DB")
+                                    
+                                    # Mágica: Adicionar ao final (Append)
+                                    wks.append_rows(valores_para_adicionar, value_input_option="USER_ENTERED")
+                                    
+                                    # Atualiza memória local
+                                    st.session_state['resultados'].extend(novos)
+                                    
+                                    st.success(f"✅ Salvo com Sucesso! ({len(novos)} atualizações)")
+                                    
+                                    import time
+                                    time.sleep(1)
+                                    st.rerun()
+                                    
+                                except Exception as e:
+                                    st.error(f"❌ Erro ao Salvar: {e}")
+                                    df_bck = pd.DataFrame(novos)
+                                    st.download_button("🚨 Baixar Backup Local", gerar_excel(df_bck), "Backup_Erro.xlsx")
             st.markdown("---")
             if st.session_state['resultados']:
                 st.subheader("📋 Resumo Sessão")
