@@ -100,7 +100,7 @@ def carregar_respostas_nuvem():
 # --- 4. BARRA LATERAL ---
 st.sidebar.header("1. Conexão")
 if os.path.exists("logo.png"): st.sidebar.image("logo.png", use_container_width=True)
-else: st.sidebar.write("🏢 DTO 01 - DCS SCANIA")
+else: st.sidebar.write("🏢 DTO 02 - DCS SCANIA")
 
 # Carga Inicial
 df_treinos, df_perguntas, df_auditores, dados_ok = carregar_bases_estaticas()
