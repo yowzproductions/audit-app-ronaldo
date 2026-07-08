@@ -8,7 +8,7 @@ import pytz
 from streamlit_gsheets import GSheetsConnection
 
 # --- 1. CONFIGURAÇÃO ---
-st.set_page_config(page_title="DTO 01 - DCS SCANIA", page_icon="🚛", layout="wide")
+st.set_page_config(page_title="DTO 02 - DCS SCANIA", page_icon="🚛", layout="wide")
 
 # --- 2. MEMÓRIA ---
 if 'resultados' not in st.session_state: st.session_state['resultados'] = []
@@ -100,7 +100,7 @@ def carregar_respostas_nuvem():
 # --- 4. BARRA LATERAL ---
 st.sidebar.header("1. Conexão")
 if os.path.exists("logo.png"): st.sidebar.image("logo.png", use_container_width=True)
-else: st.sidebar.write("🏢 DTO 01 - DCS SCANIA")
+else: st.sidebar.write("🏢 DTO 02 - DCS SCANIA")
 
 # Carga Inicial
 df_treinos, df_perguntas, df_auditores, dados_ok = carregar_bases_estaticas()
@@ -178,14 +178,14 @@ if dados_ok:
         st.session_state['permissoes'] = {'filiais': 'TODAS', 'padroes': 'TODOS', 'perfil': 'Gestor'}
 
 st.sidebar.markdown("---")
-pagina = st.sidebar.radio("Menu:", ["📝 EXECUTAR DTO 01", "📊 Painel Gerencial"])
+pagina = st.sidebar.radio("Menu:", ["📝 EXECUTAR DTO 02", "📊 Painel Gerencial"])
 # ================= EXECUÇÃO =================
-if pagina == "📝 EXECUTAR DTO 01":
+if pagina == "📝 EXECUTAR DTO 02":
     if not dados_ok: st.info("⏳ Aguardando dados...")
     elif df_auditores is not None and st.session_state['auditor_logado'] is None:
         st.warning("🔒 Acesso Bloqueado. Faça login na barra lateral.")
     else:
-        st.title("📝 EXECUTAR DTO 01")
+        st.title("📝 EXECUTAR DTO 02")
         perms = st.session_state['permissoes']
         st.sidebar.header("Filtros Execução")
         
