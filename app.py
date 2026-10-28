@@ -8,7 +8,14 @@ import pytz
 from streamlit_gsheets import GSheetsConnection
 
 # --- 1. CONFIGURAÇÃO ---
-st.set_page_config(page_title="DTO 01 - DCS SCANIA", page_icon="🚛", layout="wide")
+st.set_page_config(page_title="DTO - DCS SCANIA", page_icon="🚛", layout="wide")
+
+# Ciclo usado para linhas antigas que ainda não têm a coluna "DTO" preenchida
+DTO_PADRAO = "DTO 01"
+
+def norm_dto(v):
+    s = str(v).strip() if v is not None else ""
+    return DTO_PADRAO if s in ("", "nan", "None") else s
 
 # --- 2. MEMÓRIA ---
 if 'resultados' not in st.session_state: st.session_state['resultados'] = []
@@ -60,7 +67,13 @@ def carregar_bases_estaticas():
             if col_p: df = limpar_texto(df, col_p)
             col_pg = achar_coluna(df, 'pergunta'); 
             if col_pg: df = limpar_texto(df, col_pg)
-        
+
+        # Coluna DTO: obrigatória nas perguntas (sem ela, tudo vira DTO 01).
+        # Em Base_Treinamentos é opcional: sem a coluna, a base vale para todos os DTOs.
+        if 'DTO' not in df_p.columns: df_p['DTO'] = DTO_PADRAO
+        df_p['DTO'] = df_p['DTO'].apply(norm_dto)
+        if 'DTO' in df_t.columns: df_t['DTO'] = df_t['DTO'].apply(norm_dto)
+
         if df_a is not None:
             df_a.dropna(how='all', inplace=True)
             df_a.columns = [c.strip() for c in df_a.columns]
@@ -85,11 +98,15 @@ def carregar_respostas_nuvem():
             if c in df.columns:
                 df[c] = df[c].astype(str).str.replace(r'\.0$', '', regex=True).str.strip()
 
+        # Linhas antigas (sem DTO) contam como DTO 01
+        if 'DTO' not in df.columns: df['DTO'] = DTO_PADRAO
+        df['DTO'] = df['DTO'].apply(norm_dto)
+
         # 2. A MÁGICA (Deduplicação Inteligente)
-        # Remove duplicatas baseadas na chave composta (Quem + Onde + O Que).
-        # 'keep=last' mantém a ÚLTIMA linha encontrada na planilha (a mais recente).
+        # Chave composta: Ciclo + Quem + Onde + O Que.
+        # O DTO entra na chave para uma resposta do DTO 02 não sobrescrever a do DTO 01.
         if not df.empty and 'CPF' in df.columns and 'Padrao' in df.columns and 'Pergunta' in df.columns:
-            df = df.drop_duplicates(subset=['CPF', 'Padrao', 'Pergunta'], keep='last')
+            df = df.drop_duplicates(subset=['DTO', 'CPF', 'Padrao', 'Pergunta'], keep='last')
         
         return df
 
@@ -100,7 +117,7 @@ def carregar_respostas_nuvem():
 # --- 4. BARRA LATERAL ---
 st.sidebar.header("1. Conexão")
 if os.path.exists("logo.png"): st.sidebar.image("logo.png", use_container_width=True)
-else: st.sidebar.write("🏢 DTO 01 - DCS SCANIA")
+else: st.sidebar.write("🏢 DTO - DCS SCANIA")
 
 # Carga Inicial
 df_treinos, df_perguntas, df_auditores, dados_ok = carregar_bases_estaticas()
@@ -153,6 +170,7 @@ if dados_ok:
                         c_perf = achar_coluna(df_auditores, 'perfil')
                         c_fil = achar_coluna(df_auditores, 'filia')
                         c_pad = achar_coluna(df_auditores, 'padrao')
+                        c_dto = 'DTOs_Permitidos' if 'DTOs_Permitidos' in df_auditores.columns else None
 
                         nome = dados[c_nome]
                         perfil = str(dados.get(c_perf, 'Auditor')).strip() if c_perf else 'Auditor'
@@ -169,8 +187,14 @@ if dados_ok:
                         else:
                             pads_perm = [x.strip() for x in raw_p.split(',')]
 
+                        raw_d = str(dados.get(c_dto, 'Todos')) if c_dto else 'Todos'
+                        if 'todos' in raw_d.lower() or raw_d.strip() in ('', 'nan'):
+                            dtos_perm = 'TODOS'
+                        else:
+                            dtos_perm = [x.strip() for x in raw_d.split(',')]
+
                         st.session_state['auditor_logado'] = {'Nome': nome, 'CPF': cpf_clean}
-                        st.session_state['permissoes'] = {'filiais': fils_perm, 'padroes': pads_perm, 'perfil': perfil}
+                        st.session_state['permissoes'] = {'filiais': fils_perm, 'padroes': pads_perm, 'perfil': perfil, 'dtos': dtos_perm}
                         st.rerun()
                     else: st.sidebar.error("CPF não encontrado.")
     else:
@@ -178,14 +202,35 @@ if dados_ok:
         st.session_state['permissoes'] = {'filiais': 'TODAS', 'padroes': 'TODOS', 'perfil': 'Gestor'}
 
 st.sidebar.markdown("---")
-pagina = st.sidebar.radio("Menu:", ["📝 EXECUTAR DTO 01", "📊 Painel Gerencial"])
+
+# --- SELEÇÃO DO CICLO (DTO) ---
+sel_dto = DTO_PADRAO
+if dados_ok and not df_perguntas.empty:
+    todos_dtos = sorted(df_perguntas['DTO'].unique())
+    perm_dtos = st.session_state['permissoes'].get('dtos', 'TODOS')
+    opts_dto = todos_dtos if perm_dtos == 'TODOS' else [d for d in todos_dtos if d in perm_dtos]
+    if not opts_dto: opts_dto = [DTO_PADRAO]
+    sel_dto = st.sidebar.selectbox("Ciclo:", opts_dto, key="sel_dto")
+    if st.session_state.get('dto_anterior') != sel_dto:
+        st.session_state['dto_anterior'] = sel_dto
+        st.session_state['pagina_atual'] = 0
+
+    # A partir daqui o app só enxerga o DTO escolhido
+    df_perguntas = df_perguntas[df_perguntas['DTO'] == sel_dto]
+    if 'DTO' in df_treinos.columns:
+        df_treinos = df_treinos[df_treinos['DTO'] == sel_dto]
+
+def resultados_dto():
+    return [r for r in st.session_state['resultados'] if norm_dto(r.get('DTO')) == sel_dto]
+
+pagina = st.sidebar.radio("Menu:", ["📝 EXECUTAR DTO", "📊 Painel Gerencial"])
 # ================= EXECUÇÃO =================
-if pagina == "📝 EXECUTAR DTO 01":
+if pagina == "📝 EXECUTAR DTO":
     if not dados_ok: st.info("⏳ Aguardando dados...")
     elif df_auditores is not None and st.session_state['auditor_logado'] is None:
         st.warning("🔒 Acesso Bloqueado. Faça login na barra lateral.")
     else:
-        st.title("📝 EXECUTAR DTO 01")
+        st.title(f"📝 EXECUTAR {sel_dto}")
         perms = st.session_state['permissoes']
         st.sidebar.header("Filtros Execução")
         
@@ -245,8 +290,9 @@ if pagina == "📝 EXECUTAR DTO 01":
             
             pg_rank = rank.iloc[st.session_state['pagina_atual']*10 : (st.session_state['pagina_atual']+1)*10]
             
+            res_dto = resultados_dto()
             mem = {}
-            for r in st.session_state['resultados']:
+            for r in res_dto:
                 c_r = str(r.get('CPF', r.get('cpf', ''))).strip()
                 p_r = str(r.get('Padrao', r.get('padrao', ''))).strip()
                 t_r = str(r.get('Pergunta', r.get('pergunta', ''))).strip()
@@ -261,7 +307,7 @@ if pagina == "📝 EXECUTAR DTO 01":
                 meta_total = sum(dict_metas.get(p,0) for p in pads_nf)
                 
                 resp_tot = 0
-                for r in st.session_state['resultados']:
+                for r in res_dto:
                     if str(r.get('CPF','')).strip() == cpf and str(r.get('Padrao','')).strip() in pads_nf: resp_tot += 1
                 
                 if resp_tot == 0: icon = "⚪"
@@ -320,12 +366,11 @@ if pagina == "📝 EXECUTAR DTO 01":
                                     except: pt = "Erro"
                                     
                                     # Limpa resposta anterior da memória local
-                                    st.session_state['resultados'] = [r for r in st.session_state['resultados'] if not (str(r.get('CPF','')).strip()==cpf and str(r.get('Padrao','')).strip()==str(pr).strip() and str(r.get('Pergunta','')).strip()==pt)]
+                                    st.session_state['resultados'] = [r for r in st.session_state['resultados'] if not (norm_dto(r.get('DTO'))==sel_dto and str(r.get('CPF','')).strip()==cpf and str(r.get('Padrao','')).strip()==str(pr).strip() and str(r.get('Pergunta','')).strip()==pt)]
                                     
-                                    reg = {"Data":dh, "Filial":fil, "Funcionario":nome, "CPF":cpf, "Padrao":str(pr).strip(), "Pergunta":pt, "Resultado":v, "Observacao":obss.get(k,"")}
+                                    reg = {"DTO":sel_dto, "Data":dh, "Filial":fil, "Funcionario":nome, "CPF":cpf, "Padrao":str(pr).strip(), "Pergunta":pt, "Resultado":v, "Observacao":obss.get(k,"")}
                                     if st.session_state['auditor_logado']: reg.update({"Auditor_Nome":st.session_state['auditor_logado']['Nome'], "Auditor_CPF":st.session_state['auditor_logado']['CPF']})
                                     
-                                    st.session_state['resultados'].append(reg)
                                     novos.append(reg)
                             
                             # Exibe erros se houver
@@ -338,7 +383,8 @@ if pagina == "📝 EXECUTAR DTO 01":
                             elif novos:
                                 try:
                                     # Preparar dados para o formato de lista
-                                    colunas_ordem = ["Data", "Filial", "Funcionario", "CPF", "Padrao", "Pergunta", "Resultado", "Observacao", "Auditor_Nome", "Auditor_CPF"]
+                                    # DTO vai na 11ª coluna (K) do Respostas_DB, depois das que já existem
+                                    colunas_ordem = ["Data", "Filial", "Funcionario", "CPF", "Padrao", "Pergunta", "Resultado", "Observacao", "Auditor_Nome", "Auditor_CPF", "DTO"]
                                     
                                     valores_para_adicionar = []
                                     for item in novos:
@@ -370,13 +416,13 @@ if pagina == "📝 EXECUTAR DTO 01":
                                     df_bck = pd.DataFrame(novos)
                                     st.download_button("🚨 Baixar Backup Local", gerar_excel(df_bck), "Backup_Erro.xlsx")
             st.markdown("---")
-            if st.session_state['resultados']:
-                st.subheader("📋 Resumo Sessão")
-                st.dataframe(pd.DataFrame(st.session_state['resultados']), use_container_width=True)
+            if resultados_dto():
+                st.subheader(f"📋 Resumo Sessão - {sel_dto}")
+                st.dataframe(pd.DataFrame(resultados_dto()), use_container_width=True)
         else: st.info("Selecione filtros.")
             # ================= PAINEL =================
 elif pagina == "📊 Painel Gerencial":
-    st.title("📊 Painel Gerencial")
+    st.title(f"📊 Painel Gerencial - {sel_dto}")
     if not dados_ok: st.info("👈 Carregue a Base.")
     elif df_auditores is not None and st.session_state['auditor_logado'] is None: st.warning("🔒 Faça Login.")
     else:
@@ -413,7 +459,7 @@ elif pagina == "📊 Painel Gerencial":
         # Agora c_pad_tr existe para fazer o filtro
         df_esc = df_treinos[(df_treinos[c_fil_tr].isin(f_sel)) & (df_treinos[c_pad_tr].isin(p_sel))]
         
-        df_res = pd.DataFrame(st.session_state['resultados'])
+        df_res = pd.DataFrame(resultados_dto())
         df_rf = pd.DataFrame()
         
         # Mapeia colunas do resultado
@@ -553,4 +599,4 @@ elif pagina == "📊 Painel Gerencial":
         if not df_res.empty:
             out = BytesIO()
             with pd.ExcelWriter(out, engine='xlsxwriter') as writer: df_res.to_excel(writer, index=False)
-            b1.download_button("📥 Baixar Master", out.getvalue(), f"Master_{obter_hora().replace('/','-')}.xlsx")
+            b1.download_button("📥 Baixar Master", out.getvalue(), f"Master_{sel_dto.replace(' ','')}_{obter_hora().replace('/','-')}.xlsx")
