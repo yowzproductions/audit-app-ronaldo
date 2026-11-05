@@ -246,27 +246,72 @@ if pagina == "📝 EXECUTAR DTO":
         else: opts_p = sorted([p for p in todas_p if str(p).strip() in perms['padroes']])
             
         modo_busca = st.sidebar.radio("Modo de Busca:", ["Por Padrões", "Por Colaborador"])
+        mostrar_concluidos = st.sidebar.checkbox("Mostrar quem já concluiu este ciclo", key="mostrar_concl",
+                                                 help="Por padrão, quem já tem todas as perguntas respondidas neste DTO some da lista.")
         df_m = pd.DataFrame()
         sel_pad = []
 
         c_pad_tr = achar_coluna(df_treinos, 'padrao')
         c_nom_tr = achar_coluna(df_treinos, 'nome')
         c_cpf_tr = achar_coluna(df_treinos, 'cpf')
+        c_perg = achar_coluna(df_perguntas, 'pergunta')
+        OPCOES = ["Conforme", "Não Conforme", "Não se Aplica"]
 
+        # --- O que já foi respondido neste ciclo ---
+        res_dto = resultados_dto()
+        mem = {}
+        respondidas = {}  # cpf -> {(padrao, pergunta)}
+        for r in res_dto:
+            c_r = str(r.get('CPF', r.get('cpf', ''))).strip()
+            p_r = str(r.get('Padrao', r.get('padrao', ''))).strip()
+            t_r = str(r.get('Pergunta', r.get('pergunta', ''))).strip()
+            mem[f"{c_r}_{p_r}_{t_r}"] = {'res': r.get('Resultado'), 'obs': r.get('Observacao')}
+            if str(r.get('Resultado', '')).strip() in OPCOES:
+                respondidas.setdefault(c_r, set()).add((p_r, t_r))
+
+        perg_por_pad = {}
+        for p_k, t_k in zip(df_perguntas[c_pad_pg].astype(str).str.strip(), df_perguntas[c_perg].astype(str).str.strip()):
+            perg_por_pad.setdefault(p_k, set()).add((p_k, t_k))
+
+        def progresso(cpf, pads):
+            """Devolve (respondidas, total) considerando só as perguntas dos padrões informados."""
+            req = set().union(*[perg_por_pad.get(str(p).strip(), set()) for p in pads]) if len(pads) else set()
+            return len(req & respondidas.get(str(cpf).strip(), set())), len(req)
+
+        def concluido(cpf, pads):
+            feitas, total = progresso(cpf, pads)
+            return total > 0 and feitas >= total
+
+        ocultos = 0
         if modo_busca == "Por Padrões":
             sel_pad = list(opts_p) if st.sidebar.checkbox("Todos Meus Padrões", key="pe") else st.sidebar.multiselect("Padrões", opts_p)
             if sel_fil and sel_pad:
                 df_m = df_treinos[(df_treinos[c_fil_tr].isin(sel_fil)) & (df_treinos[c_pad_tr].isin(sel_pad))]
         else:
             if sel_fil:
-                pessoas = sorted(df_treinos[df_treinos[c_fil_tr].isin(sel_fil)][c_nom_tr].unique())
+                df_fil = df_treinos[df_treinos[c_fil_tr].isin(sel_fil)]
+                if perms['padroes'] != 'TODOS':
+                    df_fil = df_fil[df_fil[c_pad_tr].isin(perms['padroes'])]
+                pessoas = []
+                for nm_p, g in df_fil.groupby(c_nom_tr):
+                    cpf_p = str(g[c_cpf_tr].iloc[0]).strip()
+                    if not mostrar_concluidos and concluido(cpf_p, g[c_pad_tr].unique()):
+                        ocultos += 1
+                        continue
+                    pessoas.append(nm_p)
+                pessoas = sorted(pessoas)
                 sel_pessoa = st.sidebar.selectbox("Selecione o Colaborador", pessoas)
                 if sel_pessoa:
-                    df_pessoa = df_treinos[(df_treinos[c_fil_tr].isin(sel_fil)) & (df_treinos[c_nom_tr]==sel_pessoa)]
-                    if perms['padroes'] != 'TODOS':
-                        df_pessoa = df_pessoa[df_pessoa[c_pad_tr].isin(perms['padroes'])]
-                    df_m = df_pessoa
+                    df_m = df_fil[df_fil[c_nom_tr] == sel_pessoa]
                     sel_pad = df_m[c_pad_tr].unique().tolist()
+
+        # Mensagem do último salvamento (a pessoa pode ter saído da lista)
+        if st.session_state.get('msg_salvo'):
+            st.success(st.session_state.pop('msg_salvo'))
+        if st.session_state.get('backup_erro'):
+            st.error(f"❌ O último salvamento falhou ({st.session_state.get('backup_erro_msg','')}). "
+                     "Nada foi gravado na planilha. Baixe o backup e tente salvar de novo.")
+            st.download_button("🚨 Baixar Backup Local", st.session_state['backup_erro'], "Backup_Erro.xlsx")
 
         if not df_m.empty:
             mapa_nomes = {}
@@ -274,147 +319,135 @@ if pagina == "📝 EXECUTAR DTO":
             if c_nom_pg:
                 tn = df_perguntas[[c_pad_pg, c_nom_pg]].drop_duplicates()
                 mapa_nomes = pd.Series(tn[c_nom_pg].values, index=tn[c_pad_pg].astype(str).str.strip()).to_dict()
-            
-            dict_metas = df_perguntas.groupby(c_pad_pg).size().to_dict()
 
             rank = df_m.groupby([c_cpf_tr,c_nom_tr,c_fil_tr]).size().reset_index(name='Qtd')
             if modo_busca == "Por Padrões":
+                if not mostrar_concluidos:
+                    pads_cpf = df_m.groupby(df_m[c_cpf_tr].astype(str).str.strip())[c_pad_tr].unique().to_dict()
+                    feito = rank[c_cpf_tr].astype(str).str.strip().map(lambda c: concluido(c, pads_cpf.get(c, [])))
+                    ocultos = int(feito.sum())
+                    rank = rank[~feito]
                 rank = rank.sort_values(by=['Qtd',c_fil_tr], ascending=[False,True])
-            
+
+            if ocultos:
+                st.caption(f"✅ {ocultos} colaborador(es) já concluído(s) em {sel_dto} não aparecem na lista. "
+                           "Marque 'Mostrar quem já concluiu este ciclo' na barra lateral para vê-los.")
+
+            if rank.empty:
+                st.success(f"🎉 Todos os colaboradores deste filtro já foram auditados em {sel_dto}.")
+
             if 'pagina_atual' not in st.session_state: st.session_state['pagina_atual'] = 0
-            tot_p = (len(rank)-1)//10 + 1
+            tot_p = max(1, (len(rank)-1)//10 + 1)
+            if st.session_state['pagina_atual'] > tot_p-1: st.session_state['pagina_atual'] = 0
             c1,c2,c3 = st.columns([1,3,1])
             if c1.button("⬅️") and st.session_state['pagina_atual']>0: st.session_state['pagina_atual']-=1; st.rerun()
             if c3.button("➡️") and st.session_state['pagina_atual']<tot_p-1: st.session_state['pagina_atual']+=1; st.rerun()
             c2.markdown(f"<div style='text-align:center'>Pág {st.session_state['pagina_atual']+1}/{tot_p}</div>", unsafe_allow_html=True)
-            
+
             pg_rank = rank.iloc[st.session_state['pagina_atual']*10 : (st.session_state['pagina_atual']+1)*10]
-            
-            res_dto = resultados_dto()
-            mem = {}
-            for r in res_dto:
-                c_r = str(r.get('CPF', r.get('cpf', ''))).strip()
-                p_r = str(r.get('Padrao', r.get('padrao', ''))).strip()
-                t_r = str(r.get('Pergunta', r.get('pergunta', ''))).strip()
-                mem[f"{c_r}_{p_r}_{t_r}"] = {'res':r.get('Resultado'),'obs':r.get('Observacao')}
-            
+
             for _, row in pg_rank.iterrows():
                 cpf, nome, fil = str(row[c_cpf_tr]).strip(), row[c_nom_tr], row[c_fil_tr]
                 qtd_pads = row['Qtd']
-                
-                pads_nf = df_m[df_m[c_cpf_tr].astype(str).str.strip() == cpf][c_pad_tr].unique()
-                pads_nf = [str(p).strip() for p in pads_nf]
-                meta_total = sum(dict_metas.get(p,0) for p in pads_nf)
-                
-                resp_tot = 0
-                for r in res_dto:
-                    if str(r.get('CPF','')).strip() == cpf and str(r.get('Padrao','')).strip() in pads_nf: resp_tot += 1
-                
+
+                pads_orig = df_m[df_m[c_cpf_tr].astype(str).str.strip() == cpf][c_pad_tr].unique()
+                resp_tot, meta_total = progresso(cpf, pads_orig)
+
                 if resp_tot == 0: icon = "⚪"
                 elif resp_tot >= meta_total and meta_total > 0: icon = "🟢"
                 else: icon = "🟡"
-                
+
                 abrir_auto = True if modo_busca == "Por Colaborador" else False
-                
+
                 with st.expander(f"{icon} {nome} | {fil} ({qtd_pads} Padrões | {resp_tot}/{meta_total})", expanded=abrir_auto):
                     with st.form(key=f"f_{cpf}"):
                         alerta_topo = st.empty()
                         c_top, _ = st.columns([1, 4])
                         submit_top = c_top.form_submit_button("💾 Salvar na Nuvem", key=f"t_{cpf}")
                         st.markdown("---")
-                        resps, obss = {}, {}
-                        pads_orig = df_m[df_m[c_cpf_tr].astype(str).str.strip() == cpf][c_pad_tr].unique()
+                        resps, obss, nsa_pad = {}, {}, {}
                         for p in pads_orig:
                             p_str = str(p).strip()
                             st.markdown(f"**{p_str} - {mapa_nomes.get(p_str, '')}**")
                             pergs = df_perguntas[df_perguntas[c_pad_pg].astype(str).str.strip() == p_str]
+
+                            # Já estava todo como NSA? Então o botão vem marcado.
+                            prevs_pad = [mem.get(f"{cpf}_{p_str}_{t}") for t in pergs[c_perg]]
+                            todo_nsa = len(prevs_pad) > 0 and all(pv and pv['res'] == "Não se Aplica" for pv in prevs_pad)
+                            nsa_pad[p_str] = st.checkbox("🚫 Este padrão inteiro não se aplica",
+                                                         value=todo_nsa, key=f"nsa_{cpf}_{p_str}",
+                                                         help="Ao salvar, todas as perguntas deste padrão são gravadas como 'Não se Aplica', "
+                                                              "independente do que estiver marcado abaixo.")
+
                             for idx, pr in pergs.iterrows():
-                                c_perg = achar_coluna(df_perguntas, 'pergunta')
                                 txt, k_wd = pr[c_perg], f"{cpf}_{p_str}_{idx}"
                                 prev = mem.get(f"{cpf}_{p_str}_{txt}")
-                                ir = ["Conforme","Não Conforme","Não se Aplica"].index(prev['res']) if prev and prev['res'] in ["Conforme","Não Conforme","Não se Aplica"] else None
+                                ir = OPCOES.index(prev['res']) if prev and prev['res'] in OPCOES else None
                                 st.write(txt)
-                                resps[k_wd] = st.radio("R", ["Conforme", "Não Conforme", "Não se Aplica"], key=k_wd, horizontal=True, index=ir, label_visibility="collapsed")
-                                obss[k_wd] = st.text_input("Obs (Obrigatório se NC)", value=(prev['obs'] if prev else ""), key=f"o_{k_wd}")
+                                resps[k_wd] = st.radio("R", OPCOES, key=k_wd, horizontal=True, index=ir, label_visibility="collapsed")
+                                obss[k_wd] = st.text_input("Obs (Obrigatório se NC)", value=(prev['obs'] if prev and pd.notna(prev['obs']) else ""), key=f"o_{k_wd}")
                                 st.markdown("---")
-                        
+
                         alerta_fim = st.empty()
                         s_bot = st.form_submit_button("💾 Salvar na Nuvem", key=f"b_{cpf}")
                         if submit_top or s_bot:
                             dh = obter_hora()
                             novos = []
-                            erro_val = False
                             lista_erros = []
-                            
-                            # --- 1. PARTE QUE MANTIVEMOS (Validação e Memória) ---
+
                             for k, v in resps.items():
-                                # Verifica se é NC sem observação
-                                if v == "Não Conforme" and not obss.get(k, "").strip():
-                                    erro_val = True
-                                    try:
-                                        idx_e = int(k.rsplit('_', 1)[-1])
-                                        c_pg_err = achar_coluna(df_perguntas, 'pergunta')
-                                        txt_e = df_perguntas.loc[idx_e, c_pg_err]
-                                        pad_e = k.split('_')[1]
-                                        lista_erros.append(f"**PADRÃO {pad_e}:** {txt_e}")
-                                    except: lista_erros.append("Item sem observação")
-                                
-                                if v:
-                                    _, pr, ir = k.split('_', 2)
-                                    c_pg = achar_coluna(df_perguntas, 'pergunta')
-                                    try: pt = df_perguntas.loc[int(ir), c_pg]
-                                    except: pt = "Erro"
-                                    
-                                    # Limpa resposta anterior da memória local
-                                    st.session_state['resultados'] = [r for r in st.session_state['resultados'] if not (norm_dto(r.get('DTO'))==sel_dto and str(r.get('CPF','')).strip()==cpf and str(r.get('Padrao','')).strip()==str(pr).strip() and str(r.get('Pergunta','')).strip()==pt)]
-                                    
-                                    reg = {"DTO":sel_dto, "Data":dh, "Filial":fil, "Funcionario":nome, "CPF":cpf, "Padrao":str(pr).strip(), "Pergunta":pt, "Resultado":v, "Observacao":obss.get(k,"")}
-                                    if st.session_state['auditor_logado']: reg.update({"Auditor_Nome":st.session_state['auditor_logado']['Nome'], "Auditor_CPF":st.session_state['auditor_logado']['CPF']})
-                                    
-                                    novos.append(reg)
-                            
-                            # Exibe erros se houver
-                            if erro_val:
+                                _, pr, ir = k.split('_', 2)
+                                pr = str(pr).strip()
+                                if nsa_pad.get(pr):
+                                    v = "Não se Aplica"   # botão do padrão inteiro manda
+                                if not v:
+                                    continue
+                                try: pt = df_perguntas.loc[int(ir), c_perg]
+                                except: pt = "Erro"
+
+                                if v == "Não Conforme" and not str(obss.get(k, "")).strip():
+                                    lista_erros.append(f"**PADRÃO {pr}:** {pt}")
+
+                                reg = {"DTO":sel_dto, "Data":dh, "Filial":fil, "Funcionario":nome, "CPF":cpf, "Padrao":pr, "Pergunta":pt, "Resultado":v, "Observacao":obss.get(k,"")}
+                                if st.session_state['auditor_logado']: reg.update({"Auditor_Nome":st.session_state['auditor_logado']['Nome'], "Auditor_CPF":st.session_state['auditor_logado']['CPF']})
+                                novos.append(reg)
+
+                            if lista_erros:
                                 msg_erro = "⛔ **ERRO: PREENCHIMENTO OBRIGATÓRIO!**\n\nVocê marcou 'Não Conforme' nos itens abaixo sem justificativa:\n\n" + "\n".join([f"- {e}" for e in lista_erros])
                                 alerta_topo.error(msg_erro)
                                 alerta_fim.error(msg_erro)
-                            
-                            # --- 2. PARTE QUE MUDAMOS (O Salvamento Seguro - Append) ---
+
                             elif novos:
                                 try:
-                                    # Preparar dados para o formato de lista
                                     # DTO vai na 11ª coluna (K) do Respostas_DB, depois das que já existem
                                     colunas_ordem = ["Data", "Filial", "Funcionario", "CPF", "Padrao", "Pergunta", "Resultado", "Observacao", "Auditor_Nome", "Auditor_CPF", "DTO"]
-                                    
-                                    valores_para_adicionar = []
-                                    for item in novos:
-                                        linha = [str(item.get(c, "")) for c in colunas_ordem]
-                                        valores_para_adicionar.append(linha)
+                                    valores_para_adicionar = [[str(item.get(c, "")) for c in colunas_ordem] for item in novos]
 
-                                    # Conexão Direta usando gspread (Mais Rápido e Seguro)
                                     creds = st.secrets["connections"]["gsheets"]
                                     gc = gspread.service_account_from_dict(creds)
-                                    
-                                    # Abrir planilha pela URL
                                     sh = gc.open_by_url(creds["spreadsheet"])
                                     wks = sh.worksheet("Respostas_DB")
-                                    
-                                    # Mágica: Adicionar ao final (Append)
                                     wks.append_rows(valores_para_adicionar, value_input_option="USER_ENTERED")
-                                    
-                                    # Atualiza memória local
+
+                                    # Atualiza memória local: troca as respostas antigas pelas novas
+                                    chaves = {(n['CPF'], n['Padrao'], str(n['Pergunta']).strip()) for n in novos}
+                                    st.session_state['resultados'] = [
+                                        r for r in st.session_state['resultados']
+                                        if not (norm_dto(r.get('DTO')) == sel_dto and
+                                                (str(r.get('CPF','')).strip(), str(r.get('Padrao','')).strip(), str(r.get('Pergunta','')).strip()) in chaves)
+                                    ]
                                     st.session_state['resultados'].extend(novos)
-                                    
-                                    st.success(f"✅ Salvo com Sucesso! ({len(novos)} atualizações)")
-                                    
-                                    import time
-                                    time.sleep(1)
+                                    st.session_state.pop('backup_erro', None)
+                                    st.session_state['msg_salvo'] = f"✅ {nome}: salvo com sucesso! ({len(novos)} respostas)"
                                     st.rerun()
-                                    
+
                                 except Exception as e:
-                                    st.error(f"❌ Erro ao Salvar: {e}")
-                                    df_bck = pd.DataFrame(novos)
-                                    st.download_button("🚨 Baixar Backup Local", gerar_excel(df_bck), "Backup_Erro.xlsx")
+                                    # download_button não funciona dentro de form: guarda e mostra no topo
+                                    st.session_state['backup_erro'] = gerar_excel(pd.DataFrame(novos))
+                                    st.session_state['backup_erro_msg'] = f"{nome}: {e}"
+                                    st.rerun()
+                            else:
+                                alerta_topo.warning("Nenhuma resposta marcada para salvar.")
             st.markdown("---")
             if resultados_dto():
                 st.subheader(f"📋 Resumo Sessão - {sel_dto}")
