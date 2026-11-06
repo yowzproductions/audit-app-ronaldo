@@ -227,11 +227,6 @@ if dados_ok and not df_perguntas.empty:
     if _c_pad_tr and _c_pad_pg:
         _com_pergunta = set(df_perguntas[_c_pad_pg].astype(str).str.strip())
         _tem = df_treinos[_c_pad_tr].astype(str).str.strip().isin(_com_pergunta)
-        pads_sem_pergunta = sorted(set(df_treinos.loc[~_tem, _c_pad_tr].astype(str).str.strip()),
-                                   key=lambda x: (len(x), x))
-        if pads_sem_pergunta and st.session_state['permissoes'].get('perfil') == 'Gestor':
-            st.sidebar.warning(f"⚠️ {(~_tem).sum()} linhas da Base_Treinamentos em {sel_dto} têm padrões sem "
-                               f"perguntas cadastradas e foram ignoradas: {', '.join(pads_sem_pergunta)}")
         df_treinos = df_treinos[_tem]
 
 def resultados_dto():
@@ -343,7 +338,7 @@ if pagina == "📝 EXECUTAR DTO":
             feitas, total = progresso(cpf, pads)
             return total > 0 and feitas >= total
 
-        ocultos = 0
+        contagem = None  # (concluidos, ausentes, faltam)
         if modo_busca == "Por Padrões":
             sel_pad = list(opts_p) if st.sidebar.checkbox("Todos Meus Padrões", key="pe") else st.sidebar.multiselect("Padrões", opts_p)
             if sel_fil and sel_pad:
@@ -354,12 +349,17 @@ if pagina == "📝 EXECUTAR DTO":
                 if perms['padroes'] != 'TODOS':
                     df_fil = df_fil[df_fil[c_pad_tr].isin(perms['padroes'])]
                 pessoas = []
+                n_c = n_a = n_f = 0
                 for nm_p, g in df_fil.groupby(c_nom_tr):
                     cpf_p = str(g[c_cpf_tr].iloc[0]).strip()
-                    if not mostrar_concluidos and concluido(cpf_p, g[c_pad_tr].unique()):
-                        ocultos += 1
+                    feito_p = concluido(cpf_p, g[c_pad_tr].unique())
+                    if cpf_p in aus: n_a += 1
+                    elif feito_p: n_c += 1
+                    else: n_f += 1
+                    if feito_p and not mostrar_concluidos:
                         continue
                     pessoas.append(nm_p)
+                contagem = (n_c, n_a, n_f)
                 pessoas = sorted(pessoas)
                 sel_pessoa = st.sidebar.selectbox("Selecione o Colaborador", pessoas)
                 if sel_pessoa:
@@ -374,6 +374,15 @@ if pagina == "📝 EXECUTAR DTO":
                      "Nada foi gravado na planilha. Baixe o backup e tente salvar de novo.")
             st.download_button("🚨 Baixar Backup Local", st.session_state['backup_erro'], "Backup_Erro.xlsx")
 
+        def mostrar_contagem(c):
+            n_c, n_a, n_f = c
+            partes = [f"✅ **{n_c}** concluído(s)"]
+            if n_a: partes.append(f"🚷 **{n_a}** ausente(s)")
+            partes.append(f"⏳ **{n_f}** falta(m)")
+            st.markdown(" &nbsp;·&nbsp; ".join(partes))
+
+        if contagem: mostrar_contagem(contagem)
+
         if not df_m.empty:
             mapa_nomes = {}
             c_nom_pg = achar_coluna(df_perguntas, 'nome')
@@ -383,16 +392,14 @@ if pagina == "📝 EXECUTAR DTO":
 
             rank = df_m.groupby([c_cpf_tr,c_nom_tr,c_fil_tr]).size().reset_index(name='Qtd')
             if modo_busca == "Por Padrões":
+                pads_cpf = df_m.groupby(df_m[c_cpf_tr].astype(str).str.strip())[c_pad_tr].unique().to_dict()
+                cpfs_r = rank[c_cpf_tr].astype(str).str.strip()
+                feito = cpfs_r.map(lambda c: concluido(c, pads_cpf.get(c, [])))
+                eh_a = cpfs_r.isin(aus)
+                mostrar_contagem((int((feito & ~eh_a).sum()), int(eh_a.sum()), int((~feito).sum())))
                 if not mostrar_concluidos:
-                    pads_cpf = df_m.groupby(df_m[c_cpf_tr].astype(str).str.strip())[c_pad_tr].unique().to_dict()
-                    feito = rank[c_cpf_tr].astype(str).str.strip().map(lambda c: concluido(c, pads_cpf.get(c, [])))
-                    ocultos = int(feito.sum())
                     rank = rank[~feito]
                 rank = rank.sort_values(by=['Qtd',c_fil_tr], ascending=[False,True])
-
-            if ocultos:
-                st.caption(f"✅ {ocultos} colaborador(es) já concluído(s) ou registrado(s) como ausente(s) em {sel_dto} não aparecem na lista. "
-                           "Marque 'Mostrar quem já concluiu este ciclo' na barra lateral para vê-los.")
 
             if rank.empty:
                 st.success(f"🎉 Todos os colaboradores deste filtro já foram auditados em {sel_dto}.")
