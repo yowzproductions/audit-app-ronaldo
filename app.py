@@ -220,8 +220,64 @@ if dados_ok and not df_perguntas.empty:
     if 'DTO' in df_treinos.columns:
         df_treinos = df_treinos[df_treinos['DTO'] == sel_dto]
 
+    # Padrões da Base_Treinamentos que não têm pergunta cadastrada neste DTO não aparecem
+    # (senão o auditor vê um padrão vazio, sem nome e sem perguntas)
+    _c_pad_tr = achar_coluna(df_treinos, 'padrao')
+    _c_pad_pg = achar_coluna(df_perguntas, 'padrao')
+    if _c_pad_tr and _c_pad_pg:
+        _com_pergunta = set(df_perguntas[_c_pad_pg].astype(str).str.strip())
+        _tem = df_treinos[_c_pad_tr].astype(str).str.strip().isin(_com_pergunta)
+        pads_sem_pergunta = sorted(set(df_treinos.loc[~_tem, _c_pad_tr].astype(str).str.strip()),
+                                   key=lambda x: (len(x), x))
+        if pads_sem_pergunta and st.session_state['permissoes'].get('perfil') == 'Gestor':
+            st.sidebar.warning(f"⚠️ {(~_tem).sum()} linhas da Base_Treinamentos em {sel_dto} têm padrões sem "
+                               f"perguntas cadastradas e foram ignoradas: {', '.join(pads_sem_pergunta)}")
+        df_treinos = df_treinos[_tem]
+
 def resultados_dto():
     return [r for r in st.session_state['resultados'] if norm_dto(r.get('DTO')) == sel_dto]
+
+# --- AUSÊNCIA DO COLABORADOR NO CICLO ---
+# Gravada no Respostas_DB como UMA linha: Padrao = "AUSENTE", Pergunta = PERGUNTA_AUSENTE.
+# Resultado "Colaborador Ausente" marca; "Ausência cancelada" desfaz (vale a última linha).
+MARCA_AUSENTE = "AUSENTE"
+PERGUNTA_AUSENTE = "Colaborador ausente no ciclo"
+RES_AUSENTE = "Colaborador Ausente"
+RES_AUSENCIA_CANCELADA = "Ausência cancelada"
+
+def ausentes_dto():
+    """cpf -> registro de ausência ativo no ciclo escolhido."""
+    ult = {}
+    for r in resultados_dto():
+        if str(r.get('Padrao', '')).strip() == MARCA_AUSENTE:
+            ult[str(r.get('CPF', '')).strip()] = r
+    return {c: r for c, r in ult.items() if str(r.get('Resultado', '')).strip() == RES_AUSENTE}
+
+def gravar_respostas(novos):
+    """Grava no Respostas_DB (a partir da coluna A) e atualiza a memória da sessão. Levanta erro se falhar."""
+    colunas_ordem = ["Data", "Filial", "Funcionario", "CPF", "Padrao", "Pergunta", "Resultado",
+                     "Observacao", "Auditor_Nome", "Auditor_CPF", "DTO"]
+    valores = [[str(item.get(c, "")) for c in colunas_ordem] for item in novos]
+    creds = st.secrets["connections"]["gsheets"]
+    gc = gspread.service_account_from_dict(creds)
+    wks = gc.open_by_url(creds["spreadsheet"]).worksheet("Respostas_DB")
+    # table_range="A1" força a gravação a começar na coluna A, mesmo que haja lixo em outras colunas
+    wks.append_rows(valores, value_input_option="USER_ENTERED", table_range="A1")
+    chaves = {(str(n['CPF']).strip(), str(n['Padrao']).strip(), str(n['Pergunta']).strip()) for n in novos}
+    st.session_state['resultados'] = [
+        r for r in st.session_state['resultados']
+        if not (norm_dto(r.get('DTO')) == sel_dto and
+                (str(r.get('CPF', '')).strip(), str(r.get('Padrao', '')).strip(), str(r.get('Pergunta', '')).strip()) in chaves)
+    ]
+    st.session_state['resultados'].extend(novos)
+    st.session_state.pop('backup_erro', None)
+
+def registro_base(fil, nome, cpf):
+    reg = {"DTO": sel_dto, "Data": obter_hora(), "Filial": fil, "Funcionario": nome, "CPF": cpf}
+    if st.session_state.get('auditor_logado'):
+        reg.update({"Auditor_Nome": st.session_state['auditor_logado']['Nome'],
+                    "Auditor_CPF": st.session_state['auditor_logado']['CPF']})
+    return reg
 
 pagina = st.sidebar.radio("Menu:", ["📝 EXECUTAR DTO", "📊 Painel Gerencial"])
 # ================= EXECUÇÃO =================
@@ -278,7 +334,12 @@ if pagina == "📝 EXECUTAR DTO":
             req = set().union(*[perg_por_pad.get(str(p).strip(), set()) for p in pads]) if len(pads) else set()
             return len(req & respondidas.get(str(cpf).strip(), set())), len(req)
 
+        aus = ausentes_dto()
+
         def concluido(cpf, pads):
+            """Concluído = todas as perguntas respondidas OU registrado como ausente no ciclo."""
+            if str(cpf).strip() in aus:
+                return True
             feitas, total = progresso(cpf, pads)
             return total > 0 and feitas >= total
 
@@ -330,7 +391,7 @@ if pagina == "📝 EXECUTAR DTO":
                 rank = rank.sort_values(by=['Qtd',c_fil_tr], ascending=[False,True])
 
             if ocultos:
-                st.caption(f"✅ {ocultos} colaborador(es) já concluído(s) em {sel_dto} não aparecem na lista. "
+                st.caption(f"✅ {ocultos} colaborador(es) já concluído(s) ou registrado(s) como ausente(s) em {sel_dto} não aparecem na lista. "
                            "Marque 'Mostrar quem já concluiu este ciclo' na barra lateral para vê-los.")
 
             if rank.empty:
@@ -353,13 +414,50 @@ if pagina == "📝 EXECUTAR DTO":
                 pads_orig = df_m[df_m[c_cpf_tr].astype(str).str.strip() == cpf][c_pad_tr].unique()
                 resp_tot, meta_total = progresso(cpf, pads_orig)
 
-                if resp_tot == 0: icon = "⚪"
+                reg_aus = aus.get(cpf)
+                if reg_aus: icon = "⚫"
+                elif resp_tot == 0: icon = "⚪"
                 elif resp_tot >= meta_total and meta_total > 0: icon = "🟢"
                 else: icon = "🟡"
 
                 abrir_auto = True if modo_busca == "Por Colaborador" else False
+                txt_aus = f" | 🚷 AUSENTE" if reg_aus else ""
 
-                with st.expander(f"{icon} {nome} | {fil} ({qtd_pads} Padrões | {resp_tot}/{meta_total})", expanded=abrir_auto):
+                with st.expander(f"{icon} {nome} | {fil} ({qtd_pads} Padrões | {resp_tot}/{meta_total}){txt_aus}", expanded=abrir_auto):
+                    # ---------- Colaborador ausente ----------
+                    if reg_aus:
+                        st.info(f"🚷 **Registrado como ausente neste ciclo** — {reg_aus.get('Observacao','')}  \n"
+                                f"Por {reg_aus.get('Auditor_Nome','')} em {reg_aus.get('Data','')}")
+                        if st.button("↩️ Desfazer ausência", key=f"desf_{cpf}"):
+                            reg = registro_base(fil, nome, cpf)
+                            reg.update({"Padrao": MARCA_AUSENTE, "Pergunta": PERGUNTA_AUSENTE,
+                                        "Resultado": RES_AUSENCIA_CANCELADA, "Observacao": ""})
+                            try:
+                                gravar_respostas([reg])
+                                st.session_state['msg_salvo'] = f"↩️ {nome}: ausência desfeita."
+                            except Exception as e:
+                                st.session_state['backup_erro'] = gerar_excel(pd.DataFrame([reg]))
+                                st.session_state['backup_erro_msg'] = f"{nome}: {e}"
+                            st.rerun()
+                    elif st.checkbox("🚷 Colaborador ausente neste ciclo (férias, licença...)", key=f"aus_chk_{cpf}"):
+                        with st.form(key=f"aus_{cpf}"):
+                            justif = st.text_input("Motivo da ausência (obrigatório)", key=f"aus_just_{cpf}",
+                                                   placeholder="Ex.: férias de 03/11 a 22/11")
+                            if st.form_submit_button("🚷 Registrar ausência"):
+                                if not justif.strip():
+                                    st.error("Escreva o motivo da ausência.")
+                                else:
+                                    reg = registro_base(fil, nome, cpf)
+                                    reg.update({"Padrao": MARCA_AUSENTE, "Pergunta": PERGUNTA_AUSENTE,
+                                                "Resultado": RES_AUSENTE, "Observacao": justif.strip()})
+                                    try:
+                                        gravar_respostas([reg])
+                                        st.session_state['msg_salvo'] = f"🚷 {nome}: registrado como ausente."
+                                    except Exception as e:
+                                        st.session_state['backup_erro'] = gerar_excel(pd.DataFrame([reg]))
+                                        st.session_state['backup_erro_msg'] = f"{nome}: {e}"
+                                    st.rerun()
+
                     with st.form(key=f"f_{cpf}"):
                         alerta_topo = st.empty()
                         c_top, _ = st.columns([1, 4])
@@ -419,25 +517,7 @@ if pagina == "📝 EXECUTAR DTO":
 
                             elif novos:
                                 try:
-                                    # DTO vai na 11ª coluna (K) do Respostas_DB, depois das que já existem
-                                    colunas_ordem = ["Data", "Filial", "Funcionario", "CPF", "Padrao", "Pergunta", "Resultado", "Observacao", "Auditor_Nome", "Auditor_CPF", "DTO"]
-                                    valores_para_adicionar = [[str(item.get(c, "")) for c in colunas_ordem] for item in novos]
-
-                                    creds = st.secrets["connections"]["gsheets"]
-                                    gc = gspread.service_account_from_dict(creds)
-                                    sh = gc.open_by_url(creds["spreadsheet"])
-                                    wks = sh.worksheet("Respostas_DB")
-                                    wks.append_rows(valores_para_adicionar, value_input_option="USER_ENTERED")
-
-                                    # Atualiza memória local: troca as respostas antigas pelas novas
-                                    chaves = {(n['CPF'], n['Padrao'], str(n['Pergunta']).strip()) for n in novos}
-                                    st.session_state['resultados'] = [
-                                        r for r in st.session_state['resultados']
-                                        if not (norm_dto(r.get('DTO')) == sel_dto and
-                                                (str(r.get('CPF','')).strip(), str(r.get('Padrao','')).strip(), str(r.get('Pergunta','')).strip()) in chaves)
-                                    ]
-                                    st.session_state['resultados'].extend(novos)
-                                    st.session_state.pop('backup_erro', None)
+                                    gravar_respostas(novos)
                                     st.session_state['msg_salvo'] = f"✅ {nome}: salvo com sucesso! ({len(novos)} respostas)"
                                     st.rerun()
 
@@ -491,7 +571,11 @@ elif pagina == "📊 Painel Gerencial":
         
         # Agora c_pad_tr existe para fazer o filtro
         df_esc = df_treinos[(df_treinos[c_fil_tr].isin(f_sel)) & (df_treinos[c_pad_tr].isin(p_sel))]
-        
+        aus = ausentes_dto()
+        eh_aus = df_esc[c_cpf_tr].astype(str).str.strip().isin(aus)
+        df_aus = df_esc[eh_aus]
+        df_esc = df_esc[~eh_aus]   # ausentes não entram nas metas do ciclo
+
         df_res = pd.DataFrame(resultados_dto())
         df_rf = pd.DataFrame()
         
@@ -536,7 +620,8 @@ elif pagina == "📊 Painel Gerencial":
                     rp = str(da.get(cp, 'Todos')) if cp else 'Todos'
                     lp = list(df_perguntas[c_pad_pg].unique()) if 'todos' in rp.lower() else [x.strip() for x in rp.split(',')]
                     
-                    df_uni = df_treinos[(df_treinos[c_fil_tr].isin(lf)) & (df_treinos[c_pad_tr].isin(lp))]
+                    df_uni = df_treinos[(df_treinos[c_fil_tr].isin(lf)) & (df_treinos[c_pad_tr].isin(lp))
+                                        & ~df_treinos[c_cpf_tr].astype(str).str.strip().isin(aus)]
                     meta_aud = sum(metas.get(str(r[c_pad_tr]),0) for _, r in df_uni.iterrows())
                     
                     r_aud = 0
@@ -571,19 +656,29 @@ elif pagina == "📊 Painel Gerencial":
                 info = df_esc[df_esc[c_cpf_tr]==cpf].iloc[0]
                 pct = int((real/meta)*100) if meta>0 else 0
                 data_list.append({"Filial":info[c_fil_tr], "Nome":info[c_nom_tr], "Status":stt, "Prog":f"{real}/{meta} ({pct}%)"})
-            c1,c2,c3,c4 = st.columns(4)
-            c1.metric("Pessoas", total)
+            for cpf in df_aus[c_cpf_tr].unique():
+                info = df_aus[df_aus[c_cpf_tr]==cpf].iloc[0]
+                ra = aus.get(str(cpf).strip(), {})
+                data_list.append({"Filial":info[c_fil_tr], "Nome":info[c_nom_tr], "Status":"⚫ Ausente",
+                                  "Prog":"-", "Motivo":ra.get('Observacao',''), "Registrado por":ra.get('Auditor_Nome',''),
+                                  "Data":ra.get('Data','')})
+            n_aus = df_aus[c_cpf_tr].nunique()
+            c1,c2,c3,c4,c5 = st.columns(5)
+            c1.metric("Pessoas", total + n_aus)
             c2.metric("Concluídos", counts['C'])
             c3.metric("Parcial", counts['A'])
             c4.metric("Pendentes", counts['P'])
+            c5.metric("Ausentes", n_aus)
             prog = counts['C']/total if total else 0
-            st.progress(prog, f"Taxa: {int(prog*100)}%")
+            st.progress(prog, f"Taxa: {int(prog*100)}% (ausentes fora da conta)")
             df_d = pd.DataFrame(data_list)
             if not df_d.empty:
-                t1,t2,t3 = st.tabs(["🔴 Pendentes","🟡 Parciais","🟢 Concluídos"])
-                with t1: st.dataframe(df_d[df_d['Status'].str.contains("Pendente")], use_container_width=True)
-                with t2: st.dataframe(df_d[df_d['Status'].str.contains("Parcial")], use_container_width=True)
-                with t3: st.dataframe(df_d[df_d['Status'].str.contains("Concluído")], use_container_width=True)
+                cols_base = ["Filial","Nome","Status","Prog"]
+                t1,t2,t3,t4 = st.tabs(["🔴 Pendentes","🟡 Parciais","🟢 Concluídos","⚫ Ausentes"])
+                with t1: st.dataframe(df_d[df_d['Status'].str.contains("Pendente")][cols_base], use_container_width=True)
+                with t2: st.dataframe(df_d[df_d['Status'].str.contains("Parcial")][cols_base], use_container_width=True)
+                with t3: st.dataframe(df_d[df_d['Status'].str.contains("Concluído")][cols_base], use_container_width=True)
+                with t4: st.dataframe(df_d[df_d['Status'].str.contains("Ausente")].drop(columns=["Prog"], errors="ignore"), use_container_width=True)
                 st.download_button("📥 Baixar Status", gerar_excel(df_d), "Status_Pessoas.xlsx")
 
         else:
@@ -623,6 +718,8 @@ elif pagina == "📊 Painel Gerencial":
             c4.metric("Zero", counts_v['Z'])
             prog_v = counts_v['C']/total_vol if total_vol else 0
             st.progress(prog_v, f"Cobertura: {int(prog_v*100)}%")
+            if len(df_aus):
+                st.caption(f"⚫ {df_aus[c_cpf_tr].nunique()} colaborador(es) ausente(s) neste ciclo não entram na volumetria.")
             df_v = pd.DataFrame(vol_data)
             st.dataframe(df_v, use_container_width=True)
             if not df_v.empty: st.download_button("📥 Baixar Volumetria", gerar_excel(df_v), "Status_Volume.xlsx")
